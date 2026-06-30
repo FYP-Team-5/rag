@@ -1,0 +1,60 @@
+name: rubric-rag
+
+services:
+  api:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_KEY: ${API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-rubric_chunks}
+      EMBEDDINGS_URL: ${EMBEDDINGS_URL:-http://embeddings:8000/v1/embeddings}
+      EMBEDDINGS_HEALTH_URL: ${EMBEDDINGS_HEALTH_URL:-http://embeddings:8000/health}
+      EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}
+      EMBEDDINGS_API_KEY: ${EMBEDDINGS_API_KEY:-}
+      EMBEDDINGS_TIMEOUT_SECONDS: ${EMBEDDINGS_TIMEOUT_SECONDS:-30}
+      EMBEDDINGS_BATCH_SIZE: ${EMBEDDINGS_BATCH_SIZE:-64}
+      EMBEDDINGS_MAX_RETRIES: ${EMBEDDINGS_MAX_RETRIES:-2}
+      UPLOADS_DIR: /data/uploads
+      MANIFESTS_DIR: /data/manifests
+      CHUNK_SIZE: ${CHUNK_SIZE:-800}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-120}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-25}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - rubric_data:/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf \"GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q \"200 OK\" <&3'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rubric_data:
+  qdrant_data:
