@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches-ignore:
+      - main
   pull_request:
 
 permissions:
@@ -60,4 +62,3 @@ jobs:
 
       - name: Run pytest
         run: python -m pytest -q
-
