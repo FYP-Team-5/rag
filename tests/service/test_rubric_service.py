@@ -210,7 +210,7 @@ def test_ingest_retrieve_search_and_delete_workflow(tmp_path: Path) -> None:
     service = make_service(tmp_path, vectors)
     content = b"# Accuracy\n" + (b"Use relevant evidence and reasoning. " * 20)
 
-    accepted, status, rubric = asyncio.run(
+    _accepted, status, rubric = asyncio.run(
         ingest_and_wait(service, content=content)
     )
 
