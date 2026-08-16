@@ -19,6 +19,7 @@ class RemoteEmbeddings(Embeddings):
         *,
         url: str,
         model: str,
+        dimension: int | None = None,
         api_key: str | None = None,
         timeout: float = 30,
         batch_size: int = 64,
@@ -27,6 +28,7 @@ class RemoteEmbeddings(Embeddings):
     ) -> None:
         self.url = url
         self.model = model
+        self.dimension = dimension
         self.batch_size = batch_size
         self._owns_client = client is None
         if client is not None:
@@ -102,5 +104,11 @@ class RemoteEmbeddings(Embeddings):
         if len(dimensions) != 1:
             raise EmbeddingsServiceError(
                 "The embeddings service returned vectors with inconsistent dimensions."
+            )
+        returned_dimension = dimensions.pop()
+        if self.dimension is not None and returned_dimension != self.dimension:
+            raise EmbeddingsServiceError(
+                f"The embeddings service returned {returned_dimension}-dimensional vectors; "
+                f"{self.dimension} were configured."
             )
         return [vector for _, vector in indexed]

@@ -6,9 +6,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.api import health_router, router
 from app.config import Settings, get_settings
+from app.controller import health_router, router
 from app.service import RubricService
+
+
+OPENAPI_TAGS = [
+    {
+        "name": "health",
+        "description": "Service readiness and required infrastructure status.",
+    },
+    {
+        "name": "rubrics",
+        "description": "Upload, inspect, download, and delete rubric documents.",
+    },
+    {
+        "name": "search",
+        "description": "Retrieve semantically relevant rubric chunks.",
+    },
+]
 
 
 def create_app(
@@ -38,9 +54,14 @@ def create_app(
         version=settings.app_version,
         description="Ingest, store, and retrieve grading rubrics for a separate LLM service.",
         lifespan=lifespan,
+        openapi_tags=OPENAPI_TAGS,
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
+        swagger_ui_parameters={
+            "displayRequestDuration": True,
+            "filter": True,
+        },
     )
     app.state.settings = settings
     app.state.rubric_service = rubric_service

@@ -18,8 +18,8 @@ RUN pip install --upgrade pip \
 
 COPY app ./app
 
-RUN mkdir -p /data/uploads /data/manifests \
-    && chown -R app:app /app /data
+RUN mkdir -p /tmp/rubric-rag \
+    && chown -R app:app /app /tmp/rubric-rag
 
 USER app
 

@@ -3,26 +3,30 @@ import secrets
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from fastapi.security import APIKeyHeader
 
-from app.document_processor import EmptyDocumentError, UnsupportedDocumentError
-from app.embeddings import EmbeddingsServiceError
-from app.models import (
+from app.model import (
     DeleteResponse,
     HealthResponse,
     Rubric,
     RubricChunksResponse,
     RubricList,
+    RubricProcessingStatus,
     SearchRequest,
     SearchResponse,
 )
 from app.service import (
+    EmbeddingsServiceError,
+    EmptyDocumentError,
     InvalidUploadError,
     RubricConflictError,
     RubricNotFoundError,
+    RubricProcessingIncompleteError,
     RubricService,
+    S3StorageError,
     UploadTooLargeError,
+    UnsupportedDocumentError,
 )
 
 
@@ -50,19 +54,23 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 async def health(service: Annotated[RubricService, Depends(get_service)]) -> HealthResponse:
     components = await service.health()
     if not all(components.values()):
-        raise HTTPException(status_code=503, detail={
-            "qdrant": "ok" if components["qdrant"] else "unavailable",
-            "embeddings": "ok" if components["embeddings"] else "unavailable",
-        })
+        raise HTTPException(
+            status_code=503,
+            detail={
+                name: "ok" if available else "unavailable"
+                for name, available in components.items()
+            },
+        )
     return HealthResponse(
         status="ok",
         qdrant="ok",
-        embeddings="ok",
+        postgres="ok",
+        s3="ok",
         collection=service.settings.qdrant_collection,
     )
 
 
-@router.post("/rubrics", response_model=Rubric, status_code=201)
+@router.post("/rubrics", response_model=Rubric, status_code=200, tags=["rubrics"])
 async def upload_rubric(
     service: Annotated[RubricService, Depends(get_service)],
     file: Annotated[UploadFile, File(description="PDF, DOCX, TXT, or Markdown rubric")],
@@ -96,11 +104,13 @@ async def upload_rubric(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except EmbeddingsServiceError as exc:
         raise HTTPException(status_code=502, detail="Embeddings service request failed.") from exc
+    except S3StorageError as exc:
+        raise HTTPException(status_code=502, detail="Object storage request failed.") from exc
     finally:
         await file.close()
 
 
-@router.get("/rubrics", response_model=RubricList)
+@router.get("/rubrics", response_model=RubricList, tags=["rubrics"])
 async def list_rubrics(
     service: Annotated[RubricService, Depends(get_service)],
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -110,7 +120,7 @@ async def list_rubrics(
     return RubricList(total=total, items=items)
 
 
-@router.get("/rubrics/{rubric_id}", response_model=Rubric)
+@router.get("/rubrics/{rubric_id}", response_model=Rubric, tags=["rubrics"])
 async def get_rubric(
     rubric_id: str,
     service: Annotated[RubricService, Depends(get_service)],
@@ -121,23 +131,44 @@ async def get_rubric(
         raise HTTPException(status_code=404, detail="Rubric not found.") from exc
 
 
-@router.get("/rubrics/{rubric_id}/download", response_class=FileResponse)
+@router.get(
+    "/rubrics/{rubric_id}/status",
+    response_model=RubricProcessingStatus,
+    tags=["rubrics"],
+)
+async def get_rubric_processing_status(
+    rubric_id: str,
+    service: Annotated[RubricService, Depends(get_service)],
+) -> RubricProcessingStatus:
+    try:
+        return await service.processing_status(rubric_id)
+    except RubricNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Rubric not found.") from exc
+
+
+@router.get(
+    "/rubrics/{rubric_id}/download",
+    response_class=RedirectResponse,
+    tags=["rubrics"],
+)
 async def download_rubric(
     rubric_id: str,
     service: Annotated[RubricService, Depends(get_service)],
-) -> FileResponse:
+) -> RedirectResponse:
     try:
-        stored = await service.get_stored(rubric_id)
+        download_url = await service.create_download_url(rubric_id)
     except RubricNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Rubric not found.") from exc
-    return FileResponse(
-        stored.storage_path,
-        filename=stored.filename,
-        media_type=stored.content_type,
-    )
+    except S3StorageError as exc:
+        raise HTTPException(status_code=502, detail="Object storage request failed.") from exc
+    return RedirectResponse(download_url, status_code=307)
 
 
-@router.get("/rubrics/{rubric_id}/chunks", response_model=RubricChunksResponse)
+@router.get(
+    "/rubrics/{rubric_id}/chunks",
+    response_model=RubricChunksResponse,
+    tags=["rubrics"],
+)
 async def get_rubric_chunks(
     rubric_id: str,
     service: Annotated[RubricService, Depends(get_service)],
@@ -146,9 +177,11 @@ async def get_rubric_chunks(
         return await service.get_chunks(rubric_id)
     except RubricNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Rubric not found.") from exc
+    except RubricProcessingIncompleteError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.delete("/rubrics/{rubric_id}", response_model=DeleteResponse)
+@router.delete("/rubrics/{rubric_id}", response_model=DeleteResponse, tags=["rubrics"])
 async def delete_rubric(
     rubric_id: str,
     service: Annotated[RubricService, Depends(get_service)],
@@ -157,10 +190,12 @@ async def delete_rubric(
         await service.delete(rubric_id)
     except RubricNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Rubric not found.") from exc
+    except S3StorageError as exc:
+        raise HTTPException(status_code=502, detail="Object storage request failed.") from exc
     return DeleteResponse(id=rubric_id, deleted=True)
 
 
-@router.post("/search", response_model=SearchResponse)
+@router.post("/search", response_model=SearchResponse, tags=["search"])
 async def search(
     body: SearchRequest,
     service: Annotated[RubricService, Depends(get_service)],

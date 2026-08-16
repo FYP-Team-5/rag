@@ -1,14 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
-
-class HealthResponse(BaseModel):
-    status: str
-    qdrant: str
-    embeddings: str
-    collection: str
 
 
 class Rubric(BaseModel):
@@ -21,13 +14,17 @@ class Rubric(BaseModel):
     size_bytes: int
     sha256: str
     chunk_count: int
+    processed: bool = False
+    processing_status: Literal["processing", "completed", "failed"] = "processing"
+    processing_error: str | None = None
     uploaded_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class StoredRubric(Rubric):
     document_id: str
-    storage_path: str
+    s3_bucket: str
+    s3_object_key: str
     chunk_ids: list[str]
 
     def public(self) -> Rubric:
@@ -39,23 +36,13 @@ class RubricList(BaseModel):
     items: list[Rubric]
 
 
-class SearchRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=4000)
-    rubric_id: str | None = Field(default=None, max_length=128)
-    course_id: str | None = Field(default=None, max_length=128)
-    k: int = Field(default=5, ge=1, le=50)
-    score_threshold: float | None = Field(default=None, ge=-1.0, le=1.0)
-
-
-class SearchResult(BaseModel):
-    content: str
-    score: float
-    metadata: dict[str, Any]
-
-
-class SearchResponse(BaseModel):
-    query: str
-    results: list[SearchResult]
+class RubricProcessingStatus(BaseModel):
+    id: str
+    document_id: str
+    processed: bool
+    processing_status: Literal["processing", "completed", "failed"]
+    processing_error: str | None = None
+    chunk_count: int
 
 
 class RubricChunk(BaseModel):
