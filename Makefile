@@ -1,4 +1,4 @@
-.PHONY: up down logs test
+.PHONY: up down logs lint test ci
 
 up:
 	docker compose up --build -d
@@ -9,5 +9,10 @@ down:
 logs:
 	docker compose logs -f api
 
+lint:
+	python -m ruff check app tests
+
 test:
-	pytest -q
+	python -m pytest -q
+
+ci: lint test

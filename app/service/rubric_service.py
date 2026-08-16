@@ -30,9 +30,8 @@ from app.model import (
     SearchResult,
     StoredRubric,
 )
-from app.service.document_processor import DocumentProcessor, SUPPORTED_EXTENSIONS
+from app.service.document_processor import SUPPORTED_EXTENSIONS, DocumentProcessor
 from app.service.embeddings import RemoteEmbeddings
-
 
 RUBRIC_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 logger = logging.getLogger(__name__)

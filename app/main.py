@@ -10,7 +10,6 @@ from app.config import Settings, get_settings
 from app.controller import health_router, router
 from app.service import RubricService
 
-
 OPENAPI_TAGS = [
     {
         "name": "health",

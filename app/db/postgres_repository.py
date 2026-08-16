@@ -14,8 +14,8 @@ from sqlalchemy import (
     create_engine,
     delete,
     func,
-    inspect,
     insert,
+    inspect,
     select,
     text,
     update,
@@ -24,7 +24,6 @@ from sqlalchemy.engine import Engine, RowMapping
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.model import StoredRubric
-
 
 metadata = MetaData()
 

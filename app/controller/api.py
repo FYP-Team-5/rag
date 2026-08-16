@@ -2,7 +2,16 @@ import json
 import secrets
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import RedirectResponse
 from fastapi.security import APIKeyHeader
 
@@ -25,8 +34,8 @@ from app.service import (
     RubricProcessingIncompleteError,
     RubricService,
     S3StorageError,
-    UploadTooLargeError,
     UnsupportedDocumentError,
+    UploadTooLargeError,
 )
 
 

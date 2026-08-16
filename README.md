@@ -257,9 +257,13 @@ if downtime or data loss is unacceptable.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-pytest -q
+pip install -r requirements-ci.txt
+make ci
 ```
+
+GitHub Actions runs the same Ruff and pytest commands for every push and pull
+request. The two checks run as separate jobs on Python 3.12, matching the Docker
+image.
 
 Stop services without deleting data using `docker compose down`. To intentionally
 delete all stored documents, metadata, and vectors, run `docker compose down -v`.
