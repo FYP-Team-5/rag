@@ -250,7 +250,10 @@ class RubricService:
                     try:
                         await asyncio.to_thread(self.metadata_store.delete, rubric_id)
                     except Exception:
-                        pass
+                        logger.exception(
+                            "Unable to clean metadata after failed ingest for rubric %s",
+                            rubric_id,
+                        )
                 raise
             finally:
                 if processing_task is None:
@@ -300,7 +303,7 @@ class RubricService:
                             },
                         )
                     )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - document loaders vary by format
                 processing_error = exc
 
             if not await upload_result:
@@ -313,7 +316,7 @@ class RubricService:
                         enriched,
                         chunk_ids,
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - normalize dependency failures
                     processing_error = exc
 
             if processing_error is not None:

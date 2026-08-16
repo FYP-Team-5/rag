@@ -257,13 +257,27 @@ if downtime or data loss is unacceptable.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-ci.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install ruff==0.16.3
 make ci
 ```
 
-GitHub Actions runs the same Ruff and pytest commands for every push and pull
-request. The two checks run as separate jobs on Python 3.12, matching the Docker
-image.
+The [GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request
+and every push outside `main`. Its lint and test jobs run independently on Python 3.12,
+matching the Docker image. Dependencies are installed directly in the workflow from
+`requirements.txt`; there is no separate CI requirements file. The lint job installs
+the pinned Ruff version and runs `python -m ruff check app tests`. The test job runs
+`python -m pytest -q`.
+
+The [post-merge workflow](.github/workflows/post-merge.yml) runs for each push to
+`main`, including merged pull requests. It reruns lint and tests, then creates a tag
+only when both pass. Tags start at `v0.1` and increment the minor component (`v0.2`,
+`v0.3`, and so on). A rerun for an already-tagged commit reuses its tag.
+
+The post-merge workflow also contains a fully commented `build-and-push` job for
+publishing the versioned image and `latest` to GitHub Container Registry. Uncomment
+that job when image publishing is wanted; it requires `packages: write` permission.
 
 Stop services without deleting data using `docker compose down`. To intentionally
 delete all stored documents, metadata, and vectors, run `docker compose down -v`.

@@ -5,6 +5,7 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 
 class QdrantRepository:
@@ -93,7 +94,7 @@ class QdrantRepository:
         try:
             self._require_client().get_collection(self.collection)
             return True
-        except Exception:
+        except (ResponseHandlingException, UnexpectedResponse, OSError):
             return False
 
     def add_documents(self, documents: list[Document], ids: list[str]) -> None:

@@ -92,8 +92,8 @@ async def upload_rubric(
     try:
         custom_metadata: Any = json.loads(metadata)
         if not isinstance(custom_metadata, dict):
-            raise ValueError
-    except (json.JSONDecodeError, ValueError) as exc:
+            raise TypeError
+    except (json.JSONDecodeError, TypeError) as exc:
         raise HTTPException(status_code=422, detail="metadata must be a JSON object.") from exc
 
     try:
