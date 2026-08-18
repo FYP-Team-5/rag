@@ -3,7 +3,6 @@ from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
@@ -24,7 +23,6 @@ class QdrantRepository:
         self.collection = collection
         self.embeddings = embeddings
         self._client: QdrantClient | None = None
-        self._vector_store: QdrantVectorStore | None = None
 
     def initialize(self, embedding_dimension: int) -> None:
         client = QdrantClient(url=self.url, api_key=self.api_key, timeout=30)
@@ -79,14 +77,6 @@ class QdrantRepository:
                 if "already exists" not in str(exc).lower():
                     raise
 
-        self._vector_store = QdrantVectorStore(
-            client=client,
-            collection_name=self.collection,
-            embedding=self.embeddings,
-            # Dimension and distance are validated above without calling embeddings.
-            validate_collection_config=False,
-        )
-
     def close(self) -> None:
         if self._client is not None:
             self._client.close()
@@ -99,10 +89,35 @@ class QdrantRepository:
             return False
 
     def add_documents(self, documents: list[Document], ids: list[str]) -> None:
-        self._require_vector_store().add_documents(documents, ids=ids)
+        if len(documents) != len(ids):
+            raise ValueError("A point ID is required for every document chunk.")
+        vectors = self.embeddings.embed_documents(
+            [document.page_content for document in documents]
+        )
+        if len(vectors) != len(documents):
+            raise RuntimeError("The embeddings model returned the wrong vector count.")
+        self._require_client().upsert(
+            collection_name=self.collection,
+            points=[
+                models.PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={
+                        "page_content": document.page_content,
+                        "metadata": document.metadata,
+                    },
+                )
+                for point_id, document, vector in zip(ids, documents, vectors, strict=True)
+            ],
+            wait=True,
+        )
 
     def delete(self, ids: list[str]) -> None:
-        self._require_vector_store().delete(ids=ids)
+        self._require_client().delete(
+            collection_name=self.collection,
+            points_selector=models.PointIdsList(points=ids),
+            wait=True,
+        )
 
     def delete_by_document(self, document_id: str) -> None:
         self._require_client().delete(
@@ -173,20 +188,34 @@ class QdrantRepository:
             )
 
         query_filter = models.Filter(must=conditions) if conditions else None
-        kwargs: dict[str, Any] = {"k": k, "filter": query_filter}
+        kwargs: dict[str, Any] = {
+            "collection_name": self.collection,
+            "query": self.embeddings.embed_query(query),
+            "query_filter": query_filter,
+            "limit": k,
+            "with_payload": True,
+            "with_vectors": False,
+        }
         if score_threshold is not None:
             kwargs["score_threshold"] = score_threshold
 
-        return self._require_vector_store().similarity_search_with_score(
-            query, **kwargs
-        )
+        response = self._require_client().query_points(**kwargs)
+        results: list[tuple[Document, float]] = []
+        for point in response.points:
+            payload = point.payload or {}
+            metadata = payload.get("metadata", {})
+            results.append(
+                (
+                    Document(
+                        page_content=str(payload.get("page_content", "")),
+                        metadata=metadata if isinstance(metadata, dict) else {},
+                    ),
+                    float(point.score),
+                )
+            )
+        return results
 
     def _require_client(self) -> QdrantClient:
         if self._client is None:
             raise RuntimeError("Qdrant repository has not been initialized.")
         return self._client
-
-    def _require_vector_store(self) -> QdrantVectorStore:
-        if self._vector_store is None:
-            raise RuntimeError("Qdrant repository has not been initialized.")
-        return self._vector_store

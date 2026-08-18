@@ -2,8 +2,8 @@
 
 A self-hosted FastAPI service that stores versioned grading rubrics for courses and
 exams/quizzes. It streams original documents to SeaweedFS, stores lifecycle and
-ownership metadata in PostgreSQL, chunks and embeds documents in the background,
-and stores the vectors in Qdrant.
+ownership metadata in PostgreSQL, chunks documents in the background, directly asks
+an external model container for embeddings, and writes the vectors to Qdrant.
 
 The grading service reads rubric metadata directly from PostgreSQL and retrieves
 exact question-mapped chunks from Qdrant. Semantic search remains available for
@@ -14,7 +14,9 @@ Instructor --upload rubric + course/exam/version--> RAG API
                        |               |               |
                        |               |               +-> PostgreSQL metadata
                        |               +------------------> SeaweedFS original
-                       +--background chunk + embed--------> Qdrant points
+                       +--chunk text--> embedding model
+                                              |
+                       +--vectors + metadata<-+---> Qdrant points
 
 Instructor --map chunk indexes--> Grading API
 Frontend --student attempt/answers--> Grading API --exact IDs--> Qdrant
@@ -26,6 +28,8 @@ Frontend --student attempt/answers--> Grading API --exact IDs--> Qdrant
 - Require `course_id` and `exam_id` on every new rubric.
 - Allow multiple rubric versions per exam, with one record per `(exam_id, version)`.
 - Store the original document, checksum, processing status, and ordered chunk IDs.
+- Call the embedding model container directly for document batches and search
+  queries, validate its vectors, and write those vectors to Qdrant.
 - Add rubric, course, exam, version, document, and chunk-index metadata to Qdrant.
 - List and filter rubric versions by course or exam.
 - Return chunks in document order for question mapping.
@@ -34,9 +38,28 @@ Frontend --student attempt/answers--> Grading API --exact IDs--> Qdrant
 The RAG service does not own courses, exams, questions, students, attempts, answers,
 or grades. Those are managed by the grading service.
 
+## Embedding execution boundary
+
+Embedding orchestration runs in this RAG service. The model remains isolated in
+another Docker container and only performs inference:
+
+```text
+RAG API: extract -> chunk -> batch text -> HTTP POST /v1/embeddings
+                                             |
+Embedding model container: text ----------> vectors
+                                             |
+RAG API: validate count/dimensions <---------+
+         attach metadata -> direct Qdrant upsert
+```
+
+For semantic search, RAG sends query text to the same model endpoint and passes the
+returned query vector directly to Qdrant. The model container does not need
+PostgreSQL, S3, or Qdrant credentials. There is no intermediate embeddings service
+inside this repository.
+
 ## Run with Docker
 
-Requirements are Docker Compose v2 and an OpenAI-compatible embeddings service.
+Requirements are Docker Compose v2 and an OpenAI-compatible embedding model server.
 PostgreSQL, Qdrant, and SeaweedFS are included.
 
 ```bash
@@ -44,6 +67,18 @@ cp .env.example .env
 docker compose up --build -d
 docker compose ps
 ```
+
+The base Compose file does not start the embedding model. Before uploading a rubric,
+either declare that container as `embeddings` in `compose.override.yaml`, or attach
+an already-running model container after the RAG network exists:
+
+```bash
+docker network connect --alias embeddings rubric-rag_default <model-container-name>
+```
+
+With the default configuration, the model must listen on port `8000` inside that
+network and expose `/v1/embeddings`. Set `EMBEDDINGS_URL` when its container name,
+port, or route differs.
 
 Startup creates or upgrades the rubric table, initializes the Qdrant collection and
 payload indexes, and creates the S3 bucket. It does not call embeddings until an
@@ -66,8 +101,10 @@ remains unauthenticated.
 curl http://localhost:8000/health
 ```
 
-Readiness covers PostgreSQL, Qdrant, and SeaweedFS. Embeddings are a runtime
-dependency and intentionally are not part of startup readiness.
+Readiness covers PostgreSQL, Qdrant, and SeaweedFS. The embedding model is a runtime
+dependency and intentionally is not part of startup readiness. The RAG API can be
+healthy while an upload later fails processing because the model is unavailable;
+check each upload's status endpoint.
 
 ### 2. Instructor creates the course and exam catalog
 
@@ -251,23 +288,54 @@ archived version cannot be selected for a new attempt.
 | `DELETE` | `/api/v1/rubrics/{id}` | Soft-archive a rubric version |
 | `POST` | `/api/v1/search` | Semantically search rubric chunks |
 
-## Embeddings service contract
+## Embedding model container contract
 
 `EMBEDDINGS_URL` must expose OpenAI-compatible `POST /v1/embeddings`. The response
 must contain one consistently sized numeric vector per input under `data`. When
 `EMBEDDINGS_API_KEY` is set, it is sent as a Bearer token.
 
+RAG sends document chunks in batches and sends a one-item batch for a search query:
+
+```json
+{
+  "model": "BAAI/bge-small-en-v1.5",
+  "input": ["first rubric chunk", "second rubric chunk"]
+}
+```
+
+The model container must respond with one vector for each input. RAG sorts by
+`index`, verifies that no index or vector is missing, converts values to floats, and
+checks every vector against `EMBEDDINGS_DIMENSION` before writing anything to
+Qdrant:
+
+```json
+{
+  "data": [
+    {"index": 0, "embedding": [0.012, -0.034, 0.056]},
+    {"index": 1, "embedding": [0.078, -0.090, 0.123]}
+  ]
+}
+```
+
 `EMBEDDINGS_DIMENSION` creates or validates the Qdrant collection and must match the
 model. Changing embedding models changes vector meaning even when dimensions match;
 use a new collection and re-upload rubrics.
 
-An embeddings container on the RAG network can be added in
-`compose.override.yaml`:
+The model container must be addressable from the RAG API container. If it is already
+running, attach it to the RAG network and give it the default DNS alias:
+
+```bash
+docker network connect --alias embeddings rubric-rag_default <model-container-name>
+```
+
+The default `EMBEDDINGS_URL=http://embeddings:8000/v1/embeddings` will then resolve
+directly to that container. Alternatively, declare the model in
+`compose.override.yaml` so Compose attaches it automatically:
 
 ```yaml
 services:
   embeddings:
-    image: your-registry/your-embeddings-service:tag
+    image: your-registry/your-embedding-model-server:tag
     expose:
       - "8000"
 ```
@@ -284,9 +352,11 @@ EMBEDDINGS_API_KEY=replace-me
 ## Storage and operational behavior
 
 Uploads stream to a temporary file while the original is sent to S3-compatible
-storage. PostgreSQL first records `processing`; extraction, chunking, embedding, and
-Qdrant writes then complete the record with ordered chunk IDs. Points are validated
-by immutable `document_id` as well as rubric ownership.
+storage. PostgreSQL first records `processing`; extraction and chunking happen in
+RAG, inference happens in the model container, and RAG directly upserts each finished
+vector plus `page_content` and metadata into Qdrant. PostgreSQL is then completed
+with the ordered point IDs. Points are validated by immutable `document_id` as well
+as rubric ownership.
 
 Stop without deleting data using `docker compose down`. Use
 `docker compose down -v` only when intentionally deleting all local documents,

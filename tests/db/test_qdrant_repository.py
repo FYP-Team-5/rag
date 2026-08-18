@@ -21,6 +21,20 @@ class NoNetworkEmbeddings(Embeddings):
         )
 
 
+class RecordingEmbeddings(Embeddings):
+    def __init__(self) -> None:
+        self.document_calls: list[list[str]] = []
+        self.query_calls: list[str] = []
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.document_calls.append(texts)
+        return [[float(index), 1.0] for index, _ in enumerate(texts)]
+
+    def embed_query(self, text: str) -> list[float]:
+        self.query_calls.append(text)
+        return [0.5, 1.0]
+
+
 class FakeQdrantClient:
     def __init__(self, *, collection_exists: bool = False, vector_config=None) -> None:
         self._collection_exists = collection_exists
@@ -30,6 +44,8 @@ class FakeQdrantClient:
         self.closed = False
         self.records = []
         self.delete_call = None
+        self.upsert_call = None
+        self.query_call = None
 
     def collection_exists(self, collection: str) -> bool:
         return self._collection_exists
@@ -53,25 +69,25 @@ class FakeQdrantClient:
     def delete(self, **kwargs) -> None:
         self.delete_call = kwargs
 
+    def upsert(self, **kwargs) -> None:
+        self.upsert_call = kwargs
+
+    def query_points(self, **kwargs):
+        self.query_call = kwargs
+        return SimpleNamespace(
+            points=[
+                SimpleNamespace(
+                    payload={
+                        "page_content": "match",
+                        "metadata": {"chunk_index": 0},
+                    },
+                    score=0.9,
+                )
+            ]
+        )
+
     def close(self) -> None:
         self.closed = True
-
-
-class FakeVectorStore:
-    def __init__(self) -> None:
-        self.search_call = None
-        self.added = None
-        self.deleted = None
-
-    def similarity_search_with_score(self, query: str, **kwargs):
-        self.search_call = (query, kwargs)
-        return [(Document(page_content="match", metadata={"chunk_index": 0}), 0.9)]
-
-    def add_documents(self, documents, *, ids) -> None:
-        self.added = (documents, ids)
-
-    def delete(self, *, ids) -> None:
-        self.deleted = ids
 
 
 def make_repository(embeddings: Embeddings | None = None) -> QdrantRepository:
@@ -136,9 +152,10 @@ def test_initialize_rejects_incompatible_collection(
 
 
 def test_search_builds_qdrant_filters() -> None:
-    repository = make_repository()
-    vector_store = FakeVectorStore()
-    repository._vector_store = vector_store
+    embeddings = RecordingEmbeddings()
+    repository = make_repository(embeddings)
+    client = FakeQdrantClient()
+    repository._client = client
 
     results = repository.search(
         "accuracy",
@@ -150,16 +167,41 @@ def test_search_builds_qdrant_filters() -> None:
     )
 
     assert results[0][0].page_content == "match"
-    query, kwargs = vector_store.search_call
-    assert query == "accuracy"
-    assert kwargs["k"] == 3
+    assert embeddings.query_calls == ["accuracy"]
+    kwargs = client.query_call
+    assert kwargs["query"] == [0.5, 1.0]
+    assert kwargs["limit"] == 3
     assert kwargs["score_threshold"] == 0.5
-    dumped_filter = kwargs["filter"].model_dump()
+    dumped_filter = kwargs["query_filter"].model_dump()
     assert [condition["key"] for condition in dumped_filter["must"]] == [
         "metadata.rubric_id",
         "metadata.course_id",
         "metadata.exam_id",
     ]
+
+
+def test_add_documents_calls_model_then_upserts_vectors() -> None:
+    embeddings = RecordingEmbeddings()
+    repository = make_repository(embeddings)
+    client = FakeQdrantClient()
+    repository._client = client
+    documents = [
+        Document(page_content="first", metadata={"chunk_index": 0}),
+        Document(page_content="second", metadata={"chunk_index": 1}),
+    ]
+
+    repository.add_documents(documents, ["chunk-1", "chunk-2"])
+
+    assert embeddings.document_calls == [["first", "second"]]
+    assert client.upsert_call["collection_name"] == "rubrics"
+    assert client.upsert_call["wait"] is True
+    points = client.upsert_call["points"]
+    assert [point.id for point in points] == ["chunk-1", "chunk-2"]
+    assert [point.vector for point in points] == [[0.0, 1.0], [1.0, 1.0]]
+    assert points[0].payload == {
+        "page_content": "first",
+        "metadata": {"chunk_index": 0},
+    }
 
 
 def test_retrieve_converts_qdrant_payloads_to_documents() -> None:

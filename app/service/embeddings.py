@@ -8,11 +8,11 @@ from langchain_core.embeddings import Embeddings
 
 
 class EmbeddingsServiceError(RuntimeError):
-    """Raised when the remote embeddings service returns an invalid response."""
+    """Raised when the embedding model container returns an invalid response."""
 
 
 class RemoteEmbeddings(Embeddings):
-    """LangChain embeddings adapter for an OpenAI-compatible HTTP service."""
+    """HTTP client for an OpenAI-compatible embedding model container."""
 
     def __init__(
         self,

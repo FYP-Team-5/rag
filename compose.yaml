@@ -20,7 +20,8 @@ services:
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-rubric-documents}
       S3_PRESIGNED_URL_EXPIRY_SECONDS: ${S3_PRESIGNED_URL_EXPIRY_SECONDS:-900}
-      # Runtime-only dependency for ingestion/search; it is not contacted at startup.
+      # Direct HTTP endpoint of the embedding model container. That container must
+      # share this Docker network (normally with the DNS name "embeddings").
       EMBEDDINGS_URL: ${EMBEDDINGS_URL:-http://embeddings:8000/v1/embeddings}
       EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}
       EMBEDDINGS_DIMENSION: ${EMBEDDINGS_DIMENSION:-384}
