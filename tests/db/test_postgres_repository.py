@@ -12,9 +12,7 @@ from app.model import StoredRubric
 
 
 def make_repository() -> PostgresRubricRepository:
-    return PostgresRubricRepository(
-        engine=create_engine("sqlite+pysqlite:///:memory:")
-    )
+    return PostgresRubricRepository(engine=create_engine("sqlite+pysqlite:///:memory:"))
 
 
 def make_stored_rubric(
@@ -28,6 +26,7 @@ def make_stored_rubric(
         title="History rubric",
         version="1",
         course_id="HIST-101",
+        exam_id=f"exam-{rubric_id}",
         filename="rubric.md",
         content_type="text/markdown",
         size_bytes=42,
@@ -111,3 +110,21 @@ def test_postgres_repository_updates_processing_state() -> None:
     assert failed.processing_error == "embedding request failed"
     assert failed.chunk_count == 0
     assert failed.chunk_ids == []
+
+
+def test_repository_filters_by_course_and_exam_and_archives() -> None:
+    repository = make_repository()
+    repository.initialize()
+    first = make_stored_rubric("first")
+    second = make_stored_rubric("second")
+    second.course_id = "MATH-101"
+    repository.save(first)
+    repository.save(second)
+
+    assert [item.id for item in repository.list(course_id="HIST-101")] == ["first"]
+    assert [item.id for item in repository.list(exam_id="exam-second")] == ["second"]
+
+    repository.archive("first")
+
+    assert repository.list(course_id="HIST-101") == []
+    assert repository.list(course_id="HIST-101", include_archived=True)[0].archived

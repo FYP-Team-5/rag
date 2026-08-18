@@ -9,6 +9,7 @@ class Rubric(BaseModel):
     title: str
     version: str
     course_id: str | None = None
+    exam_id: str | None = None
     filename: str
     content_type: str
     size_bytes: int
@@ -17,6 +18,7 @@ class Rubric(BaseModel):
     processed: bool = False
     processing_status: Literal["processing", "completed", "failed"] = "processing"
     processing_error: str | None = None
+    archived: bool = False
     uploaded_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -55,6 +57,6 @@ class RubricChunksResponse(BaseModel):
     chunks: list[RubricChunk]
 
 
-class DeleteResponse(BaseModel):
+class ArchiveResponse(BaseModel):
     id: str
-    deleted: bool
+    archived: bool

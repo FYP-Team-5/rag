@@ -17,7 +17,6 @@ from app.model import SearchRequest
 from app.service import (
     EmbeddingsServiceError,
     RemoteEmbeddings,
-    RubricNotFoundError,
     RubricProcessingIncompleteError,
     RubricService,
 )
@@ -157,6 +156,7 @@ async def ingest_and_wait(
         title="History rubric",
         version="1",
         course_id="HIST-101",
+        exam_id="history-midterm",
         custom_metadata={"teacher": "Ada"},
     )
     status = await service.wait_for_processing(accepted.id)
@@ -186,7 +186,9 @@ def test_startup_does_not_call_embeddings_service(
             pass
 
     def fail_if_called(embeddings: RemoteEmbeddings, text: str) -> list[float]:
-        raise AssertionError("The embeddings service must not be called during startup.")
+        raise AssertionError(
+            "The embeddings service must not be called during startup."
+        )
 
     monkeypatch.setattr(qdrant_module, "QdrantClient", FakeQdrantClient)
     monkeypatch.setattr(RemoteEmbeddings, "embed_query", fail_if_called)
@@ -210,9 +212,7 @@ def test_ingest_retrieve_search_and_delete_workflow(tmp_path: Path) -> None:
     service = make_service(tmp_path, vectors)
     content = b"# Accuracy\n" + (b"Use relevant evidence and reasoning. " * 20)
 
-    _accepted, status, rubric = asyncio.run(
-        ingest_and_wait(service, content=content)
-    )
+    _accepted, status, rubric = asyncio.run(ingest_and_wait(service, content=content))
 
     stored = asyncio.run(service.get_stored(rubric.id))
     document_store = service.document_store
@@ -224,6 +224,7 @@ def test_ingest_retrieve_search_and_delete_workflow(tmp_path: Path) -> None:
     assert stored.chunk_ids == list(vectors.documents)
     assert all(
         document.metadata["rubric_id"] == "history-v1"
+        and document.metadata["exam_id"] == "history-midterm"
         for document in vectors.documents.values()
     )
 
@@ -238,6 +239,7 @@ def test_ingest_retrieve_search_and_delete_workflow(tmp_path: Path) -> None:
                 query="accuracy",
                 rubric_id=rubric.id,
                 course_id="HIST-101",
+                exam_id="history-midterm",
                 k=2,
             )
         )
@@ -249,16 +251,19 @@ def test_ingest_retrieve_search_and_delete_workflow(tmp_path: Path) -> None:
             "k": 2,
             "rubric_id": "history-v1",
             "course_id": "HIST-101",
+            "exam_id": "history-midterm",
             "score_threshold": None,
         },
     )
 
-    asyncio.run(service.delete(rubric.id))
+    asyncio.run(service.archive(rubric.id))
 
-    assert vectors.deleted_document_ids == [stored.document_id]
-    assert stored.s3_object_key not in document_store.objects
-    with pytest.raises(RubricNotFoundError):
-        asyncio.run(service.get(rubric.id))
+    assert vectors.deleted_document_ids == []
+    assert stored.s3_object_key in document_store.objects
+    assert asyncio.run(service.get(rubric.id)).archived is True
+    total, visible = asyncio.run(service.list(offset=0, limit=10))
+    assert total == 0
+    assert visible == []
 
 
 def test_download_url_uses_s3_key_from_postgres(tmp_path: Path) -> None:
@@ -306,7 +311,8 @@ def test_upload_returns_while_embeddings_continue_in_background(tmp_path: Path) 
             rubric_id="history-v1",
             title=None,
             version="1",
-            course_id=None,
+            course_id="HIST-101",
+            exam_id="history-midterm",
             custom_metadata={},
         )
         assert await asyncio.to_thread(vectors.started.wait, 1)
@@ -334,7 +340,8 @@ def test_ingest_rejects_invalid_custom_ids(tmp_path: Path, rubric_id: str) -> No
                 rubric_id=rubric_id,
                 title=None,
                 version="1",
-                course_id=None,
+                course_id="HIST-101",
+                exam_id="history-midterm",
                 custom_metadata={},
             )
         )
@@ -349,7 +356,8 @@ def test_ingest_generates_id_when_custom_id_is_empty(tmp_path: Path) -> None:
             rubric_id="",
             title=None,
             version="1",
-            course_id=None,
+            course_id="HIST-101",
+            exam_id="history-midterm",
             custom_metadata={},
         )
         await service.wait_for_processing(result.id)

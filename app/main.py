@@ -17,7 +17,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "rubrics",
-        "description": "Upload, inspect, download, and delete rubric documents.",
+        "description": "Upload, inspect, download, and archive rubric documents.",
     },
     {
         "name": "search",

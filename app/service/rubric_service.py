@@ -150,7 +150,8 @@ class RubricService:
         rubric_id: str | None,
         title: str | None,
         version: str,
-        course_id: str | None,
+        course_id: str,
+        exam_id: str,
         custom_metadata: dict[str, Any],
     ) -> Rubric:
         filename = Path(upload.filename or "").name
@@ -167,8 +168,12 @@ class RubricService:
                 "periods, underscores, or hyphens."
             )
 
-        if course_id is not None and len(course_id) > 128:
-            raise InvalidUploadError("course_id must be at most 128 characters.")
+        for field_name, value in (("course_id", course_id), ("exam_id", exam_id)):
+            if not RUBRIC_ID_PATTERN.fullmatch(value):
+                raise InvalidUploadError(
+                    f"{field_name} must be 1-128 characters and contain only letters, "
+                    "numbers, periods, underscores, or hyphens."
+                )
 
         async with self._write_lock:
             if await asyncio.to_thread(self.metadata_store.exists, rubric_id):
@@ -188,6 +193,7 @@ class RubricService:
                     title=title or Path(filename).stem,
                     version=version,
                     course_id=course_id,
+                    exam_id=exam_id,
                     filename=filename,
                     content_type=upload.content_type or "application/octet-stream",
                     size_bytes=size_bytes,
@@ -233,6 +239,8 @@ class RubricService:
                         metadata={
                             "rubric-id": rubric_id,
                             "document-id": document_id,
+                            "course-id": course_id,
+                            "exam-id": exam_id,
                             "sha256": digest,
                         },
                     )
@@ -270,7 +278,9 @@ class RubricService:
         enriched: list[Document] = []
         try:
             try:
-                chunks = await asyncio.to_thread(self.processor.process, processing_path)
+                chunks = await asyncio.to_thread(
+                    self.processor.process, processing_path
+                )
                 chunk_ids = [str(uuid.uuid4()) for _ in chunks]
                 common_metadata: dict[str, Any] = {
                     "rubric_id": stored.id,
@@ -285,6 +295,8 @@ class RubricService:
                 }
                 if stored.course_id is not None:
                     common_metadata["course_id"] = stored.course_id
+                if stored.exam_id is not None:
+                    common_metadata["exam_id"] = stored.exam_id
 
                 for index, chunk in enumerate(chunks):
                     loader_metadata = {
@@ -341,7 +353,9 @@ class RubricService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("Background processing task crashed for rubric %s", stored.id)
+            logger.exception(
+                "Background processing task crashed for rubric %s", stored.id
+            )
             upload_succeeded = (
                 upload_result.done()
                 and not upload_result.cancelled()
@@ -370,7 +384,9 @@ class RubricService:
                 document_id,
             )
         except Exception:
-            logger.exception("Unable to clean Qdrant vectors for document %s", document_id)
+            logger.exception(
+                "Unable to clean Qdrant vectors for document %s", document_id
+            )
 
     async def _fail_interrupted_processing(self) -> None:
         records = await asyncio.to_thread(self.metadata_store.list)
@@ -397,7 +413,9 @@ class RubricService:
         detail = str(exc).strip()
         return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
-    async def _save_upload(self, upload: UploadFile, destination: Path) -> tuple[int, str]:
+    async def _save_upload(
+        self, upload: UploadFile, destination: Path
+    ) -> tuple[int, str]:
         max_bytes = self.settings.max_upload_size_mb * 1024 * 1024
         size = 0
         digest = hashlib.sha256()
@@ -414,9 +432,24 @@ class RubricService:
             raise InvalidUploadError("The uploaded file is empty.")
         return size, digest.hexdigest()
 
-    async def list(self, *, offset: int, limit: int) -> tuple[int, list[Rubric]]:
-        records = await asyncio.to_thread(self.metadata_store.list)
-        return len(records), [item.public() for item in records[offset : offset + limit]]
+    async def list(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        course_id: str | None = None,
+        exam_id: str | None = None,
+        include_archived: bool = False,
+    ) -> tuple[int, list[Rubric]]:
+        records = await asyncio.to_thread(
+            self.metadata_store.list,
+            course_id=course_id,
+            exam_id=exam_id,
+            include_archived=include_archived,
+        )
+        return len(records), [
+            item.public() for item in records[offset : offset + limit]
+        ]
 
     async def get(self, rubric_id: str) -> Rubric:
         return (await self.get_stored(rubric_id)).public()
@@ -452,18 +485,13 @@ class RubricService:
             await task
         return await self.processing_status(rubric_id)
 
-    async def delete(self, rubric_id: str) -> None:
+    async def archive(self, rubric_id: str) -> None:
         async with self._write_lock:
             task = self._processing_tasks.get(rubric_id)
             if task is not None:
                 await task
-            stored = await self.get_stored(rubric_id)
-            await asyncio.to_thread(
-                self._require_vectors().delete_by_document,
-                stored.document_id,
-            )
-            await asyncio.to_thread(self.document_store.delete, stored.s3_object_key)
-            await asyncio.to_thread(self.metadata_store.delete, rubric_id)
+            await self.get_stored(rubric_id)
+            await asyncio.to_thread(self.metadata_store.archive, rubric_id)
 
     async def get_chunks(self, rubric_id: str) -> RubricChunksResponse:
         stored = await self.get_stored(rubric_id)
@@ -489,6 +517,7 @@ class RubricService:
             k=request.k,
             rubric_id=request.rubric_id,
             course_id=request.course_id,
+            exam_id=request.exam_id,
             score_threshold=request.score_threshold,
         )
         return SearchResponse(

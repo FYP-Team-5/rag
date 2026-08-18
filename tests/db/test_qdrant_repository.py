@@ -11,10 +11,14 @@ from app.db import QdrantRepository
 
 class NoNetworkEmbeddings(Embeddings):
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        raise AssertionError("embeddings must not be called during Qdrant initialization")
+        raise AssertionError(
+            "embeddings must not be called during Qdrant initialization"
+        )
 
     def embed_query(self, text: str) -> list[float]:
-        raise AssertionError("embeddings must not be called during Qdrant initialization")
+        raise AssertionError(
+            "embeddings must not be called during Qdrant initialization"
+        )
 
 
 class FakeQdrantClient:
@@ -90,20 +94,32 @@ def test_initialize_creates_collection_without_calling_embeddings(monkeypatch) -
 
     assert client.created_collection["collection_name"] == "rubrics"
     assert client.created_collection["vectors_config"].size == 384
-    assert client.created_collection["vectors_config"].distance == models.Distance.COSINE
+    assert (
+        client.created_collection["vectors_config"].distance == models.Distance.COSINE
+    )
     assert client.payload_indexes == [
         "metadata.document_id",
         "metadata.rubric_id",
         "metadata.course_id",
+        "metadata.exam_id",
     ]
 
 
 @pytest.mark.parametrize(
     ("vector_config", "message"),
     [
-        (models.VectorParams(size=768, distance=models.Distance.COSINE), "dimension 768"),
-        (models.VectorParams(size=384, distance=models.Distance.DOT), "COSINE is required"),
-        ({"named": models.VectorParams(size=384, distance=models.Distance.COSINE)}, "unnamed"),
+        (
+            models.VectorParams(size=768, distance=models.Distance.COSINE),
+            "dimension 768",
+        ),
+        (
+            models.VectorParams(size=384, distance=models.Distance.DOT),
+            "COSINE is required",
+        ),
+        (
+            {"named": models.VectorParams(size=384, distance=models.Distance.COSINE)},
+            "unnamed",
+        ),
     ],
 )
 def test_initialize_rejects_incompatible_collection(
@@ -129,6 +145,7 @@ def test_search_builds_qdrant_filters() -> None:
         k=3,
         rubric_id="rubric-1",
         course_id="HIST-101",
+        exam_id="history-midterm",
         score_threshold=0.5,
     )
 
@@ -141,6 +158,7 @@ def test_search_builds_qdrant_filters() -> None:
     assert [condition["key"] for condition in dumped_filter["must"]] == [
         "metadata.rubric_id",
         "metadata.course_id",
+        "metadata.exam_id",
     ]
 
 

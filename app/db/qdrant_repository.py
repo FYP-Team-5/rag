@@ -65,6 +65,7 @@ class QdrantRepository:
             "metadata.document_id",
             "metadata.rubric_id",
             "metadata.course_id",
+            "metadata.exam_id",
         ):
             try:
                 client.create_payload_index(
@@ -145,6 +146,7 @@ class QdrantRepository:
         k: int,
         rubric_id: str | None = None,
         course_id: str | None = None,
+        exam_id: str | None = None,
         score_threshold: float | None = None,
     ) -> list[tuple[Document, float]]:
         conditions: list[models.FieldCondition] = []
@@ -162,13 +164,22 @@ class QdrantRepository:
                     match=models.MatchValue(value=course_id),
                 )
             )
+        if exam_id:
+            conditions.append(
+                models.FieldCondition(
+                    key="metadata.exam_id",
+                    match=models.MatchValue(value=exam_id),
+                )
+            )
 
         query_filter = models.Filter(must=conditions) if conditions else None
         kwargs: dict[str, Any] = {"k": k, "filter": query_filter}
         if score_threshold is not None:
             kwargs["score_threshold"] = score_threshold
 
-        return self._require_vector_store().similarity_search_with_score(query, **kwargs)
+        return self._require_vector_store().similarity_search_with_score(
+            query, **kwargs
+        )
 
     def _require_client(self) -> QdrantClient:
         if self._client is None:

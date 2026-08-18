@@ -30,6 +30,7 @@ class FakeService:
             title=kwargs["title"] or "Rubric",
             version=kwargs["version"],
             course_id=kwargs["course_id"],
+            exam_id=kwargs["exam_id"],
             filename=upload.filename,
             content_type=upload.content_type,
             size_bytes=len(content),
@@ -43,7 +44,7 @@ class FakeService:
         self.ingested.append(rubric)
         return rubric
 
-    async def list(self, *, offset: int, limit: int):
+    async def list(self, *, offset: int, limit: int, **kwargs):
         return len(self.ingested), self.ingested[offset : offset + limit]
 
     async def search(self, request) -> SearchResponse:
@@ -60,6 +61,12 @@ class FakeService:
             processing_status="processing",
             chunk_count=0,
         )
+
+    async def archive(self, rubric_id: str) -> None:
+        for rubric in self.ingested:
+            if rubric.id == rubric_id:
+                rubric.archived = True
+                return
 
 
 class UnhealthyService(FakeService):
@@ -96,11 +103,18 @@ def test_upload_and_list_rubrics(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post(
             "/api/v1/rubrics",
-            files={"file": ("history.md", b"# Criteria\nAccurate evidence", "text/markdown")},
+            files={
+                "file": (
+                    "history.md",
+                    b"# Criteria\nAccurate evidence",
+                    "text/markdown",
+                )
+            },
             data={
                 "rubric_id": "history-essay-v1",
                 "title": "History short answer",
                 "course_id": "HIST-101",
+                "exam_id": "history-midterm",
                 "metadata": '{"teacher":"Ada"}',
             },
         )
@@ -119,7 +133,11 @@ def test_rejects_bad_metadata(tmp_path: Path) -> None:
         response = client.post(
             "/api/v1/rubrics",
             files={"file": ("rubric.txt", b"criteria", "text/plain")},
-            data={"metadata": "[]"},
+            data={
+                "course_id": "HIST-101",
+                "exam_id": "history-midterm",
+                "metadata": "[]",
+            },
         )
 
     assert response.status_code == 422
@@ -172,6 +190,7 @@ def test_upload_is_accepted_without_embeddings_but_search_returns_bad_gateway(
         upload = client.post(
             "/api/v1/rubrics",
             files={"file": ("rubric.md", b"# Criteria", "text/markdown")},
+            data={"course_id": "HIST-101", "exam_id": "history-midterm"},
         )
         search = client.post("/api/v1/search", json={"query": "accuracy"})
 
@@ -194,6 +213,14 @@ def test_processing_status_endpoint(tmp_path: Path) -> None:
         "processing_error": None,
         "chunk_count": 0,
     }
+
+
+def test_delete_endpoint_soft_archives_rubric(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.delete("/api/v1/rubrics/history-v1")
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "history-v1", "archived": True}
 
 
 def test_search_request_is_validated_before_service_call(tmp_path: Path) -> None:
@@ -221,6 +248,7 @@ def test_object_storage_failures_return_bad_gateway(tmp_path: Path) -> None:
         upload = client.post(
             "/api/v1/rubrics",
             files={"file": ("rubric.md", b"# Criteria", "text/markdown")},
+            data={"course_id": "HIST-101", "exam_id": "history-midterm"},
         )
         download = client.get(
             "/api/v1/rubrics/rubric-1/download",

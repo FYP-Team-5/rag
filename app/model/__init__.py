@@ -2,7 +2,7 @@
 
 from app.model.health import HealthResponse
 from app.model.rubric import (
-    DeleteResponse,
+    ArchiveResponse,
     Rubric,
     RubricChunk,
     RubricChunksResponse,
@@ -13,7 +13,7 @@ from app.model.rubric import (
 from app.model.search import SearchRequest, SearchResponse, SearchResult
 
 __all__ = [
-    "DeleteResponse",
+    "ArchiveResponse",
     "HealthResponse",
     "Rubric",
     "RubricChunk",
