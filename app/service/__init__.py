@@ -29,8 +29,8 @@ __all__ = [
     "RubricNotFoundError",
     "RubricProcessingIncompleteError",
     "RubricService",
-    "SearchService",
     "S3StorageError",
+    "SearchService",
     "UnsupportedDocumentError",
     "UploadTooLargeError",
 ]

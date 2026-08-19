@@ -1,6 +1,9 @@
 from typing import Any, Literal
+
 from pydantic import BaseModel
+
 from app.model.rubric import Rubric
+
 
 class RubricList(BaseModel):
     total: int

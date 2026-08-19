@@ -33,8 +33,8 @@ from app.service import (
     RubricNotFoundError,
     RubricProcessingIncompleteError,
     RubricService,
-    SearchService,
     S3StorageError,
+    SearchService,
     UnsupportedDocumentError,
     UploadTooLargeError,
 )
