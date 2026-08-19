@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from app.config import Settings, get_settings
-from app.controller import health_router, router
-from app.service import RubricService
+from app.controller import health_router, rubrics_router, search_router
+from app.service import RubricService, SearchService
 
 OPENAPI_TAGS = [
     {
@@ -64,6 +64,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.rubric_service = rubric_service
+    app.state.search_service = SearchService(rubric_service)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
@@ -72,7 +73,8 @@ def create_app(
         allow_headers=["*"],
     )
     app.include_router(health_router)
-    app.include_router(router, prefix=settings.api_v1_prefix)
+    app.include_router(rubrics_router, prefix=settings.api_v1_prefix)
+    app.include_router(search_router, prefix=settings.api_v1_prefix)
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:

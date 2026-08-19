@@ -38,6 +38,30 @@ Frontend --student attempt/answers--> Grading API --exact IDs--> Qdrant
 The RAG service does not own courses, exams, questions, students, attempts, answers,
 or grades. Those are managed by the grading service.
 
+### Database-backed models
+
+| Model | Attributes | Purpose |
+|---|---|---|
+| `Rubric` | `id`, `title`, `version`, `course_id`, `exam_id`, `filename`, `content_type`, `size_bytes`, `sha256`, `chunk_count`, `processed`, `processing_status`, `processing_error`, `archived`, `uploaded_at`, `metadata` | Public domain representation of persisted rubric metadata. |
+| `StoredRubric` | All `Rubric` fields plus `document_id`, `s3_bucket`, `s3_object_key`, `chunk_ids` | Full `rubrics` table model, including internal object-storage and Qdrant references. |
+| Qdrant chunk record | point `id`, embedding vector, `page_content`, metadata (`document_id`, `rubric_id`, optional `course_id`/`exam_id`, `version`, `chunk_index`, custom metadata) | Stores an embedded document chunk for exact retrieval and semantic search. |
+
+### DTOs
+
+DTO definitions live in `app/dto/`; they describe HTTP and service-boundary payloads rather than database entities.
+
+| DTO | Attributes | Purpose |
+|---|---|---|
+| `SearchRequest` | `query`, `rubric_id`, `course_id`, `exam_id`, `k`, `score_threshold` | Validates semantic-search input and optional filters. |
+| `SearchResult` | `content`, `score`, `metadata` | Represents one ranked Qdrant result. |
+| `SearchResponse` | `query`, `results` | Search endpoint response. |
+| `RubricList` | `total`, `items` | Paginated/list response containing public rubrics. |
+| `RubricProcessingStatus` | `id`, `document_id`, `processed`, `processing_status`, `processing_error`, `chunk_count` | Reports asynchronous ingestion state. |
+| `RubricChunk` | `content`, `metadata` | Public representation of a retrieved chunk. |
+| `RubricChunksResponse` | `rubric_id`, `chunks` | Ordered chunk-list response for a rubric. |
+| `ArchiveResponse` | `id`, `archived` | Confirms that a rubric was archived. |
+| `HealthResponse` | `status`, `qdrant`, `postgres`, `s3`, `collection` | Health endpoint response. |
+
 ## Embedding execution boundary
 
 Embedding orchestration runs in this RAG service. The model remains isolated in

@@ -13,7 +13,7 @@ from starlette.datastructures import Headers
 import app.db.qdrant_repository as qdrant_module
 from app.config import Settings
 from app.db import PostgresRubricRepository
-from app.model import SearchRequest
+from app.dto import SearchRequest
 from app.service import (
     EmbeddingsServiceError,
     RemoteEmbeddings,

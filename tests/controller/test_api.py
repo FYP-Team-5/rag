@@ -5,7 +5,8 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from app.model import Rubric, RubricProcessingStatus, SearchResponse
+from app.dto import RubricProcessingStatus, SearchResponse
+from app.model import Rubric
 from app.service import EmbeddingsServiceError, S3StorageError
 
 

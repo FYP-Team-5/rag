@@ -20,16 +20,15 @@ from app.db import (
     RubricRecordNotFoundError,
     S3DocumentRepository,
 )
-from app.model import (
-    Rubric,
+from app.dto import (
     RubricChunk,
     RubricChunksResponse,
     RubricProcessingStatus,
     SearchRequest,
     SearchResponse,
     SearchResult,
-    StoredRubric,
 )
+from app.model import Rubric, StoredRubric
 from app.service.document_processor import SUPPORTED_EXTENSIONS, DocumentProcessor
 from app.service.embeddings import RemoteEmbeddings
 

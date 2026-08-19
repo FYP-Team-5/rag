@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.model import SearchRequest, SearchResponse, SearchResult
+from app.dto import SearchRequest, SearchResponse, SearchResult
 
 
 @pytest.mark.parametrize(
