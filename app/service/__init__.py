@@ -16,6 +16,7 @@ from app.service.rubric_service import (
     RubricService,
     UploadTooLargeError,
 )
+from app.service.search_service import SearchService
 
 __all__ = [
     "SUPPORTED_EXTENSIONS",
@@ -29,6 +30,7 @@ __all__ = [
     "RubricProcessingIncompleteError",
     "RubricService",
     "S3StorageError",
+    "SearchService",
     "UnsupportedDocumentError",
     "UploadTooLargeError",
 ]

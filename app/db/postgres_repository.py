@@ -35,6 +35,7 @@ rubrics = Table(
     Column("title", String(300), nullable=False),
     Column("version", String(64), nullable=False),
     Column("course_id", String(128), nullable=True, index=True),
+    Column("exam_id", String(128), nullable=True, index=True),
     Column("filename", String(512), nullable=False),
     Column("content_type", String(255), nullable=False),
     Column("size_bytes", BigInteger, nullable=False),
@@ -43,6 +44,7 @@ rubrics = Table(
     Column("processed", Boolean, nullable=False),
     Column("processing_status", String(32), nullable=False),
     Column("processing_error", Text, nullable=True),
+    Column("archived", Boolean, nullable=False, default=False),
     Column("uploaded_at", DateTime(timezone=True), nullable=False, index=True),
     Column("custom_metadata", JSON, nullable=False),
     Column("s3_bucket", String(255), nullable=False),
@@ -81,7 +83,9 @@ class PostgresRubricRepository:
 
     def _migrate_processing_columns(self) -> None:
         """Upgrade metadata tables created before asynchronous processing existed."""
-        existing = {column["name"] for column in inspect(self.engine).get_columns("rubrics")}
+        existing = {
+            column["name"] for column in inspect(self.engine).get_columns("rubrics")
+        }
         statements: list[str] = []
         boolean_true = "TRUE" if self.engine.dialect.name == "postgresql" else "1"
         if "processed" not in existing:
@@ -96,6 +100,12 @@ class PostgresRubricRepository:
             )
         if "processing_error" not in existing:
             statements.append("ALTER TABLE rubrics ADD COLUMN processing_error TEXT")
+        if "exam_id" not in existing:
+            statements.append("ALTER TABLE rubrics ADD COLUMN exam_id VARCHAR(128)")
+        if "archived" not in existing:
+            statements.append(
+                "ALTER TABLE rubrics ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE"
+            )
         with self.engine.begin() as connection:
             for statement in statements:
                 connection.execute(text(statement))
@@ -103,6 +113,17 @@ class PostgresRubricRepository:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_rubrics_processing_status "
                     "ON rubrics (processing_status)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_rubrics_exam_id ON rubrics (exam_id)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_rubrics_exam_version "
+                    "ON rubrics (exam_id, version) WHERE exam_id IS NOT NULL"
                 )
             )
 
@@ -139,15 +160,39 @@ class PostgresRubricRepository:
             raise RubricRecordNotFoundError(rubric_id)
         return self._to_model(row)
 
-    def list(self) -> list[StoredRubric]:
-        statement = select(rubrics).order_by(rubrics.c.uploaded_at.desc())
+    def list(
+        self,
+        *,
+        course_id: str | None = None,
+        exam_id: str | None = None,
+        include_archived: bool = False,
+    ) -> list[StoredRubric]:
+        statement = select(rubrics)
+        if course_id is not None:
+            statement = statement.where(rubrics.c.course_id == course_id)
+        if exam_id is not None:
+            statement = statement.where(rubrics.c.exam_id == exam_id)
+        if not include_archived:
+            statement = statement.where(rubrics.c.archived.is_(False))
+        statement = statement.order_by(rubrics.c.uploaded_at.desc())
         with self.engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
         return [self._to_model(row) for row in rows]
 
     def delete(self, rubric_id: str) -> None:
         with self.engine.begin() as connection:
-            result = connection.execute(delete(rubrics).where(rubrics.c.id == rubric_id))
+            result = connection.execute(
+                delete(rubrics).where(rubrics.c.id == rubric_id)
+            )
+        if result.rowcount == 0:
+            raise RubricRecordNotFoundError(rubric_id)
+
+    def archive(self, rubric_id: str) -> None:
+        statement = (
+            update(rubrics).where(rubrics.c.id == rubric_id).values(archived=True)
+        )
+        with self.engine.begin() as connection:
+            result = connection.execute(statement)
         if result.rowcount == 0:
             raise RubricRecordNotFoundError(rubric_id)
 

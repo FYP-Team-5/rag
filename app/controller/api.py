@@ -15,16 +15,16 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from fastapi.security import APIKeyHeader
 
-from app.model import (
-    DeleteResponse,
+from app.dto import (
+    ArchiveResponse,
     HealthResponse,
-    Rubric,
     RubricChunksResponse,
     RubricList,
     RubricProcessingStatus,
     SearchRequest,
     SearchResponse,
 )
+from app.model import Rubric
 from app.service import (
     EmbeddingsServiceError,
     EmptyDocumentError,
@@ -34,6 +34,7 @@ from app.service import (
     RubricProcessingIncompleteError,
     RubricService,
     S3StorageError,
+    SearchService,
     UnsupportedDocumentError,
     UploadTooLargeError,
 )
@@ -41,6 +42,9 @@ from app.service import (
 
 def get_service(request: Request) -> RubricService:
     return request.app.state.rubric_service
+
+def get_search_service(request: Request) -> SearchService:
+    return request.app.state.search_service
 
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -51,16 +55,21 @@ async def require_api_key(
     x_api_key: Annotated[str | None, Depends(api_key_header)],
 ) -> None:
     configured = request.app.state.settings.api_key
-    if configured and (x_api_key is None or not secrets.compare_digest(x_api_key, configured)):
+    if configured and (
+        x_api_key is None or not secrets.compare_digest(x_api_key, configured)
+    ):
         raise HTTPException(status_code=401, detail="Missing or invalid API key.")
 
 
 health_router = APIRouter(tags=["health"])
-router = APIRouter(dependencies=[Depends(require_api_key)])
+rubrics_router = APIRouter(prefix="/rubrics", tags=["rubrics"], dependencies=[Depends(require_api_key)])
+search_router = APIRouter(prefix="/search", tags=["search"], dependencies=[Depends(require_api_key)])
 
 
 @health_router.get("/health", response_model=HealthResponse)
-async def health(service: Annotated[RubricService, Depends(get_service)]) -> HealthResponse:
+async def health(
+    service: Annotated[RubricService, Depends(get_service)],
+) -> HealthResponse:
     components = await service.health()
     if not all(components.values()):
         raise HTTPException(
@@ -79,14 +88,15 @@ async def health(service: Annotated[RubricService, Depends(get_service)]) -> Hea
     )
 
 
-@router.post("/rubrics", response_model=Rubric, status_code=200, tags=["rubrics"])
+@rubrics_router.post("", response_model=Rubric, status_code=200)
 async def upload_rubric(
     service: Annotated[RubricService, Depends(get_service)],
     file: Annotated[UploadFile, File(description="PDF, DOCX, TXT, or Markdown rubric")],
+    course_id: Annotated[str, Form(min_length=1, max_length=128)],
+    exam_id: Annotated[str, Form(min_length=1, max_length=128)],
     rubric_id: Annotated[str | None, Form()] = None,
     title: Annotated[str | None, Form(max_length=300)] = None,
     version: Annotated[str, Form(max_length=64)] = "1",
-    course_id: Annotated[str | None, Form(max_length=128)] = None,
     metadata: Annotated[str, Form(description="Optional JSON object")] = "{}",
 ) -> Rubric:
     try:
@@ -94,7 +104,9 @@ async def upload_rubric(
         if not isinstance(custom_metadata, dict):
             raise TypeError
     except (json.JSONDecodeError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail="metadata must be a JSON object.") from exc
+        raise HTTPException(
+            status_code=422, detail="metadata must be a JSON object."
+        ) from exc
 
     try:
         return await service.ingest(
@@ -103,6 +115,7 @@ async def upload_rubric(
             title=title,
             version=version,
             course_id=course_id,
+            exam_id=exam_id,
             custom_metadata=custom_metadata,
         )
     except RubricConflictError as exc:
@@ -112,24 +125,37 @@ async def upload_rubric(
     except (InvalidUploadError, UnsupportedDocumentError, EmptyDocumentError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except EmbeddingsServiceError as exc:
-        raise HTTPException(status_code=502, detail="Embeddings service request failed.") from exc
+        raise HTTPException(
+            status_code=502, detail="Embeddings service request failed."
+        ) from exc
     except S3StorageError as exc:
-        raise HTTPException(status_code=502, detail="Object storage request failed.") from exc
+        raise HTTPException(
+            status_code=502, detail="Object storage request failed."
+        ) from exc
     finally:
         await file.close()
 
 
-@router.get("/rubrics", response_model=RubricList, tags=["rubrics"])
+@rubrics_router.get("", response_model=RubricList)
 async def list_rubrics(
     service: Annotated[RubricService, Depends(get_service)],
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    course_id: Annotated[str | None, Query(max_length=128)] = None,
+    exam_id: Annotated[str | None, Query(max_length=128)] = None,
+    include_archived: bool = False,
 ) -> RubricList:
-    total, items = await service.list(offset=offset, limit=limit)
+    total, items = await service.list(
+        offset=offset,
+        limit=limit,
+        course_id=course_id,
+        exam_id=exam_id,
+        include_archived=include_archived,
+    )
     return RubricList(total=total, items=items)
 
 
-@router.get("/rubrics/{rubric_id}", response_model=Rubric, tags=["rubrics"])
+@rubrics_router.get("/{rubric_id}", response_model=Rubric)
 async def get_rubric(
     rubric_id: str,
     service: Annotated[RubricService, Depends(get_service)],
@@ -140,8 +166,8 @@ async def get_rubric(
         raise HTTPException(status_code=404, detail="Rubric not found.") from exc
 
 
-@router.get(
-    "/rubrics/{rubric_id}/status",
+@rubrics_router.get(
+    "/{rubric_id}/status",
     response_model=RubricProcessingStatus,
     tags=["rubrics"],
 )
@@ -155,8 +181,8 @@ async def get_rubric_processing_status(
         raise HTTPException(status_code=404, detail="Rubric not found.") from exc
 
 
-@router.get(
-    "/rubrics/{rubric_id}/download",
+@rubrics_router.get(
+    "/{rubric_id}/download",
     response_class=RedirectResponse,
     tags=["rubrics"],
 )
@@ -169,12 +195,14 @@ async def download_rubric(
     except RubricNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Rubric not found.") from exc
     except S3StorageError as exc:
-        raise HTTPException(status_code=502, detail="Object storage request failed.") from exc
+        raise HTTPException(
+            status_code=502, detail="Object storage request failed."
+        ) from exc
     return RedirectResponse(download_url, status_code=307)
 
 
-@router.get(
-    "/rubrics/{rubric_id}/chunks",
+@rubrics_router.get(
+    "/{rubric_id}/chunks",
     response_model=RubricChunksResponse,
     tags=["rubrics"],
 )
@@ -190,26 +218,26 @@ async def get_rubric_chunks(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.delete("/rubrics/{rubric_id}", response_model=DeleteResponse, tags=["rubrics"])
-async def delete_rubric(
+@rubrics_router.delete("/{rubric_id}", response_model=ArchiveResponse)
+async def archive_rubric(
     rubric_id: str,
     service: Annotated[RubricService, Depends(get_service)],
-) -> DeleteResponse:
+) -> ArchiveResponse:
     try:
-        await service.delete(rubric_id)
+        await service.archive(rubric_id)
     except RubricNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Rubric not found.") from exc
-    except S3StorageError as exc:
-        raise HTTPException(status_code=502, detail="Object storage request failed.") from exc
-    return DeleteResponse(id=rubric_id, deleted=True)
+    return ArchiveResponse(id=rubric_id, archived=True)
 
 
-@router.post("/search", response_model=SearchResponse, tags=["search"])
+@search_router.post("", response_model=SearchResponse)
 async def search(
     body: SearchRequest,
-    service: Annotated[RubricService, Depends(get_service)],
+    service: Annotated[SearchService, Depends(get_search_service)],
 ) -> SearchResponse:
     try:
         return await service.search(body)
     except EmbeddingsServiceError as exc:
-        raise HTTPException(status_code=502, detail="Embeddings service request failed.") from exc
+        raise HTTPException(
+            status_code=502, detail="Embeddings service request failed."
+        ) from exc
