@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     s3_presigned_url_expiry_seconds: int = Field(default=900, ge=60, le=86_400)
     s3_course_materials_bucket: str = "course-materials"
 
-    embeddings_url: str = "http://localhost:11434/api/generate"
+    embeddings_url: str = "http://host.docker.internal:11434/api/generate"
     embeddings_model: str = "qwen3-embedding"
     embeddings_dimension: int = Field(default=384, ge=1, le=100_000)
     embeddings_api_key: str | None = None
