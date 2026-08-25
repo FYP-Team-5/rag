@@ -61,9 +61,8 @@ class QdrantRepository:
 
         for field in (
             "metadata.document_id",
-            "metadata.rubric_id",
+            "metadata.course_material_id",
             "metadata.course_id",
-            "metadata.exam_id",
         ):
             try:
                 client.create_payload_index(
@@ -107,7 +106,9 @@ class QdrantRepository:
                         "metadata": document.metadata,
                     },
                 )
-                for point_id, document, vector in zip(ids, documents, vectors, strict=True)
+                for point_id, document, vector in zip(
+                    ids, documents, vectors, strict=True
+                )
             ],
             wait=True,
         )
@@ -159,19 +160,10 @@ class QdrantRepository:
         query: str,
         *,
         k: int,
-        rubric_id: str | None = None,
         course_id: str | None = None,
-        exam_id: str | None = None,
         score_threshold: float | None = None,
     ) -> list[tuple[Document, float]]:
         conditions: list[models.FieldCondition] = []
-        if rubric_id:
-            conditions.append(
-                models.FieldCondition(
-                    key="metadata.rubric_id",
-                    match=models.MatchValue(value=rubric_id),
-                )
-            )
         if course_id:
             conditions.append(
                 models.FieldCondition(
@@ -179,14 +171,6 @@ class QdrantRepository:
                     match=models.MatchValue(value=course_id),
                 )
             )
-        if exam_id:
-            conditions.append(
-                models.FieldCondition(
-                    key="metadata.exam_id",
-                    match=models.MatchValue(value=exam_id),
-                )
-            )
-
         query_filter = models.Filter(must=conditions) if conditions else None
         kwargs: dict[str, Any] = {
             "collection_name": self.collection,

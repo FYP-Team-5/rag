@@ -8,29 +8,27 @@ from app.service.document_processor import (
     UnsupportedDocumentError,
 )
 from app.service.embeddings import EmbeddingsServiceError, RemoteEmbeddings
-from app.service.rubric_service import (
-    InvalidUploadError,
-    RubricConflictError,
-    RubricNotFoundError,
-    RubricProcessingIncompleteError,
-    RubricService,
-    UploadTooLargeError,
+from app.service.course_material_service import (
+    CourseMaterialConflictError,
+    CourseMaterialNotFoundError,
+    CourseMaterialService,
+    CourseMaterialTooLargeError,
+    InvalidCourseMaterialError,
 )
 from app.service.search_service import SearchService
 
 __all__ = [
     "SUPPORTED_EXTENSIONS",
     "DocumentProcessor",
+    "CourseMaterialConflictError",
+    "CourseMaterialNotFoundError",
+    "CourseMaterialService",
+    "CourseMaterialTooLargeError",
     "EmbeddingsServiceError",
     "EmptyDocumentError",
-    "InvalidUploadError",
+    "InvalidCourseMaterialError",
     "RemoteEmbeddings",
-    "RubricConflictError",
-    "RubricNotFoundError",
-    "RubricProcessingIncompleteError",
-    "RubricService",
     "S3StorageError",
     "SearchService",
     "UnsupportedDocumentError",
-    "UploadTooLargeError",
 ]

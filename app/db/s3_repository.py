@@ -24,12 +24,14 @@ class S3DocumentRepository:
         region: str,
         bucket: str,
         presigned_url_expiry_seconds: int,
+        cors_allowed_origins: list[str] | None = None,
         client: BaseClient | None = None,
         public_client: BaseClient | None = None,
     ) -> None:
         self.bucket = bucket
         self.region = region
         self.presigned_url_expiry_seconds = presigned_url_expiry_seconds
+        self.cors_allowed_origins = cors_allowed_origins or []
         client_options: dict[str, Any] = {
             "service_name": "s3",
             "aws_access_key_id": access_key,
@@ -59,6 +61,21 @@ class S3DocumentRepository:
                         "LocationConstraint": self.region
                     }
                 self._client.create_bucket(**options)
+            if self.cors_allowed_origins:
+                self._client.put_bucket_cors(
+                    Bucket=self.bucket,
+                    CORSConfiguration={
+                        "CORSRules": [
+                            {
+                                "AllowedHeaders": ["*"],
+                                "AllowedMethods": ["PUT", "GET", "HEAD"],
+                                "AllowedOrigins": self.cors_allowed_origins,
+                                "ExposeHeaders": ["ETag"],
+                                "MaxAgeSeconds": 3600,
+                            }
+                        ]
+                    },
+                )
         except (BotoCoreError, ClientError) as exc:
             raise S3StorageError("Unable to initialize the document bucket.") from exc
 
@@ -93,13 +110,30 @@ class S3DocumentRepository:
                 ExtraArgs=extra_args,
             )
         except (BotoCoreError, ClientError, OSError) as exc:
-            raise S3StorageError("Unable to upload the document to object storage.") from exc
+            raise S3StorageError(
+                "Unable to upload the document to object storage."
+            ) from exc
 
     def delete(self, object_key: str) -> None:
         try:
             self._client.delete_object(Bucket=self.bucket, Key=object_key)
         except (BotoCoreError, ClientError) as exc:
-            raise S3StorageError("Unable to delete the document from object storage.") from exc
+            raise S3StorageError(
+                "Unable to delete the document from object storage."
+            ) from exc
+
+    def object_size(self, object_key: str) -> int:
+        try:
+            response = self._client.head_object(Bucket=self.bucket, Key=object_key)
+            return int(response["ContentLength"])
+        except (BotoCoreError, ClientError, KeyError, TypeError, ValueError) as exc:
+            raise S3StorageError("Unable to inspect the uploaded document.") from exc
+
+    def download(self, object_key: str, destination: Path) -> None:
+        try:
+            self._client.download_file(self.bucket, object_key, str(destination))
+        except (BotoCoreError, ClientError, OSError) as exc:
+            raise S3StorageError("Unable to download the uploaded document.") from exc
 
     def create_download_url(self, object_key: str, filename: str) -> str:
         safe_filename = filename.replace('"', "")
@@ -117,6 +151,16 @@ class S3DocumentRepository:
             )
         except (BotoCoreError, ClientError) as exc:
             raise S3StorageError("Unable to create a document download URL.") from exc
+
+    def create_upload_url(self, object_key: str) -> str:
+        try:
+            return self._public_client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": self.bucket, "Key": object_key},
+                ExpiresIn=self.presigned_url_expiry_seconds,
+            )
+        except (BotoCoreError, ClientError) as exc:
+            raise S3StorageError("Unable to create a document upload URL.") from exc
 
     def uri(self, object_key: str) -> str:
         return f"s3://{self.bucket}/{object_key}"

@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from app.config import Settings, get_settings
-from app.controller import health_router, rubrics_router, search_router
-from app.service import RubricService, SearchService
+from app.controller import course_material_router, health_router, search_router
+from app.service import CourseMaterialService, SearchService
 
 OPENAPI_TAGS = [
     {
@@ -16,12 +16,12 @@ OPENAPI_TAGS = [
         "description": "Service readiness and required infrastructure status.",
     },
     {
-        "name": "rubrics",
-        "description": "Upload, inspect, download, and archive rubric documents.",
+        "name": "course-material",
+        "description": "Create direct-upload URLs and track course-material processing.",
     },
     {
         "name": "search",
-        "description": "Retrieve semantically relevant rubric chunks.",
+        "description": "Retrieve semantically relevant course-material chunks.",
     },
 ]
 
@@ -29,10 +29,10 @@ OPENAPI_TAGS = [
 def create_app(
     *,
     settings: Settings | None = None,
-    service: RubricService | None = None,
+    service: CourseMaterialService | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
-    rubric_service = service or RubricService(settings)
+    course_material_service = service or CourseMaterialService(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -41,17 +41,17 @@ def create_app(
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
         )
         app.state.settings = settings
-        app.state.rubric_service = rubric_service
-        await rubric_service.initialize()
+        app.state.course_material_service = course_material_service
+        await course_material_service.initialize()
         try:
             yield
         finally:
-            await rubric_service.close()
+            await course_material_service.close()
 
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        description="Ingest, store, and retrieve grading rubrics for a separate LLM service.",
+        description="Store, process, and search course materials uploaded directly to S3.",
         lifespan=lifespan,
         openapi_tags=OPENAPI_TAGS,
         docs_url="/docs",
@@ -63,8 +63,8 @@ def create_app(
         },
     )
     app.state.settings = settings
-    app.state.rubric_service = rubric_service
-    app.state.search_service = SearchService(rubric_service)
+    app.state.course_material_service = course_material_service
+    app.state.search_service = SearchService(course_material_service)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
@@ -73,7 +73,7 @@ def create_app(
         allow_headers=["*"],
     )
     app.include_router(health_router)
-    app.include_router(rubrics_router, prefix=settings.api_v1_prefix)
+    app.include_router(course_material_router, prefix=settings.api_v1_prefix)
     app.include_router(search_router, prefix=settings.api_v1_prefix)
 
     @app.get("/", include_in_schema=False)

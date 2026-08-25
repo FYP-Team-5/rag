@@ -1,4 +1,4 @@
-"""Rubric document ingestion and retrieval application."""
+"""Course-material ingestion and retrieval application."""
 
 from app.config import Settings, get_settings
 

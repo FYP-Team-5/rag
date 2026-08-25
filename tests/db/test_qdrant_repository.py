@@ -94,7 +94,7 @@ def make_repository(embeddings: Embeddings | None = None) -> QdrantRepository:
     return QdrantRepository(
         url="http://qdrant:6333",
         api_key=None,
-        collection="rubrics",
+        collection="course-materials",
         embeddings=embeddings or NoNetworkEmbeddings(),
     )
 
@@ -108,16 +108,15 @@ def test_initialize_creates_collection_without_calling_embeddings(monkeypatch) -
     repository = make_repository(embeddings)
     repository.initialize(384)
 
-    assert client.created_collection["collection_name"] == "rubrics"
+    assert client.created_collection["collection_name"] == "course-materials"
     assert client.created_collection["vectors_config"].size == 384
     assert (
         client.created_collection["vectors_config"].distance == models.Distance.COSINE
     )
     assert client.payload_indexes == [
         "metadata.document_id",
-        "metadata.rubric_id",
+        "metadata.course_material_id",
         "metadata.course_id",
-        "metadata.exam_id",
     ]
 
 
@@ -160,9 +159,7 @@ def test_search_builds_qdrant_filters() -> None:
     results = repository.search(
         "accuracy",
         k=3,
-        rubric_id="rubric-1",
         course_id="HIST-101",
-        exam_id="history-midterm",
         score_threshold=0.5,
     )
 
@@ -174,9 +171,7 @@ def test_search_builds_qdrant_filters() -> None:
     assert kwargs["score_threshold"] == 0.5
     dumped_filter = kwargs["query_filter"].model_dump()
     assert [condition["key"] for condition in dumped_filter["must"]] == [
-        "metadata.rubric_id",
         "metadata.course_id",
-        "metadata.exam_id",
     ]
 
 
@@ -193,7 +188,7 @@ def test_add_documents_calls_model_then_upserts_vectors() -> None:
     repository.add_documents(documents, ["chunk-1", "chunk-2"])
 
     assert embeddings.document_calls == [["first", "second"]]
-    assert client.upsert_call["collection_name"] == "rubrics"
+    assert client.upsert_call["collection_name"] == "course-materials"
     assert client.upsert_call["wait"] is True
     points = client.upsert_call["points"]
     assert [point.id for point in points] == ["chunk-1", "chunk-2"]
@@ -231,7 +226,7 @@ def test_delete_by_document_uses_document_payload_filter() -> None:
 
     repository.delete_by_document("document-1")
 
-    assert client.delete_call["collection_name"] == "rubrics"
+    assert client.delete_call["collection_name"] == "course-materials"
     assert client.delete_call["wait"] is True
     selector = client.delete_call["points_selector"].model_dump()
     assert selector["filter"]["must"][0]["key"] == "metadata.document_id"

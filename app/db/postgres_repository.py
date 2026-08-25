@@ -1,12 +1,9 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from sqlalchemy import (
-    JSON,
-    BigInteger,
-    Boolean,
     Column,
-    DateTime,
-    Integer,
     MetaData,
     String,
     Table,
@@ -23,46 +20,32 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine, RowMapping
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.model import StoredRubric
+from app.model import CourseMaterial
 
 metadata = MetaData()
 
-rubrics = Table(
-    "rubrics",
+course_materials = Table(
+    "course_materials",
     metadata,
-    Column("id", String(128), primary_key=True),
-    Column("document_id", String(36), nullable=False, unique=True),
-    Column("title", String(300), nullable=False),
-    Column("version", String(64), nullable=False),
-    Column("course_id", String(128), nullable=True, index=True),
-    Column("exam_id", String(128), nullable=True, index=True),
+    Column("id", String(36), primary_key=True),
+    Column("course_id", String(36), nullable=False, index=True),
     Column("filename", String(512), nullable=False),
-    Column("content_type", String(255), nullable=False),
-    Column("size_bytes", BigInteger, nullable=False),
-    Column("sha256", String(64), nullable=False, index=True),
-    Column("chunk_count", Integer, nullable=False),
-    Column("processed", Boolean, nullable=False),
-    Column("processing_status", String(32), nullable=False),
-    Column("processing_error", Text, nullable=True),
-    Column("archived", Boolean, nullable=False, default=False),
-    Column("uploaded_at", DateTime(timezone=True), nullable=False, index=True),
-    Column("custom_metadata", JSON, nullable=False),
+    Column("status", String(32), nullable=False, index=True),
     Column("s3_bucket", String(255), nullable=False),
     Column("s3_object_key", Text, nullable=False, unique=True),
-    Column("chunk_ids", JSON, nullable=False),
 )
 
 
-class RubricRecordNotFoundError(KeyError):
+class CourseMaterialRecordNotFoundError(KeyError):
     pass
 
 
-class RubricRecordConflictError(ValueError):
+class CourseMaterialRecordConflictError(ValueError):
     pass
 
 
-class PostgresRubricRepository:
-    """Persists document metadata in PostgreSQL through SQLAlchemy Core."""
+class PostgresCourseMaterialRepository:
+    """Persists course-material upload and processing state."""
 
     def __init__(
         self,
@@ -72,60 +55,36 @@ class PostgresRubricRepository:
     ) -> None:
         if engine is None and database_url is None:
             raise ValueError("database_url is required when engine is not provided.")
-        self.engine = engine or create_engine(
-            database_url,
-            pool_pre_ping=True,
-        )
+        self.engine = engine or create_engine(database_url, pool_pre_ping=True)
 
     def initialize(self) -> None:
+        # The legacy rubrics table is intentionally left untouched. Removing it would
+        # be a destructive migration and it is no longer read by this service.
         metadata.create_all(self.engine)
-        self._migrate_processing_columns()
+        self._drop_unused_columns()
 
-    def _migrate_processing_columns(self) -> None:
-        """Upgrade metadata tables created before asynchronous processing existed."""
+    def _drop_unused_columns(self) -> None:
         existing = {
-            column["name"] for column in inspect(self.engine).get_columns("rubrics")
+            column["name"]
+            for column in inspect(self.engine).get_columns("course_materials")
         }
-        statements: list[str] = []
-        boolean_true = "TRUE" if self.engine.dialect.name == "postgresql" else "1"
-        if "processed" not in existing:
-            statements.append(
-                f"ALTER TABLE rubrics ADD COLUMN processed BOOLEAN NOT NULL "
-                f"DEFAULT {boolean_true}"
-            )
-        if "processing_status" not in existing:
-            statements.append(
-                "ALTER TABLE rubrics ADD COLUMN processing_status VARCHAR(32) "
-                "NOT NULL DEFAULT 'completed'"
-            )
-        if "processing_error" not in existing:
-            statements.append("ALTER TABLE rubrics ADD COLUMN processing_error TEXT")
-        if "exam_id" not in existing:
-            statements.append("ALTER TABLE rubrics ADD COLUMN exam_id VARCHAR(128)")
-        if "archived" not in existing:
-            statements.append(
-                "ALTER TABLE rubrics ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE"
-            )
+        unused = (
+            "content_type",
+            "processing_error",
+            "chunk_count",
+            "chunk_ids",
+            "created_at",
+            "uploaded_at",
+        )
         with self.engine.begin() as connection:
-            for statement in statements:
-                connection.execute(text(statement))
             connection.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_rubrics_processing_status "
-                    "ON rubrics (processing_status)"
-                )
+                text("DROP INDEX IF EXISTS ix_course_materials_created_at")
             )
-            connection.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_rubrics_exam_id ON rubrics (exam_id)"
-                )
-            )
-            connection.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_rubrics_exam_version "
-                    "ON rubrics (exam_id, version) WHERE exam_id IS NOT NULL"
-                )
-            )
+            for column in unused:
+                if column in existing:
+                    connection.execute(
+                        text(f"ALTER TABLE course_materials DROP COLUMN {column}")
+                    )
 
     def close(self) -> None:
         self.engine.dispose()
@@ -133,105 +92,88 @@ class PostgresRubricRepository:
     def health(self) -> bool:
         try:
             with self.engine.connect() as connection:
-                connection.execute(select(func.count()).select_from(rubrics))
+                connection.execute(select(func.count()).select_from(course_materials))
             return True
         except SQLAlchemyError:
             return False
 
-    def exists(self, rubric_id: str) -> bool:
-        statement = select(rubrics.c.id).where(rubrics.c.id == rubric_id).limit(1)
-        with self.engine.connect() as connection:
-            return connection.execute(statement).first() is not None
-
-    def save(self, stored: StoredRubric) -> None:
+    def save(self, stored: CourseMaterial) -> None:
         values = stored.model_dump()
-        values["custom_metadata"] = values.pop("metadata")
+        values["id"] = str(values["id"])
+        values["course_id"] = str(values["course_id"])
         try:
             with self.engine.begin() as connection:
-                connection.execute(insert(rubrics).values(**values))
+                connection.execute(insert(course_materials).values(**values))
         except IntegrityError as exc:
-            raise RubricRecordConflictError(stored.id) from exc
+            raise CourseMaterialRecordConflictError(str(stored.id)) from exc
 
-    def get(self, rubric_id: str) -> StoredRubric:
-        statement = select(rubrics).where(rubrics.c.id == rubric_id)
+    def get(self, material_id: UUID | str) -> CourseMaterial:
+        statement = select(course_materials).where(
+            course_materials.c.id == str(material_id)
+        )
         with self.engine.connect() as connection:
             row = connection.execute(statement).mappings().first()
         if row is None:
-            raise RubricRecordNotFoundError(rubric_id)
+            raise CourseMaterialRecordNotFoundError(str(material_id))
         return self._to_model(row)
 
-    def list(
-        self,
-        *,
-        course_id: str | None = None,
-        exam_id: str | None = None,
-        include_archived: bool = False,
-    ) -> list[StoredRubric]:
-        statement = select(rubrics)
+    def list(self, *, course_id: UUID | str | None = None) -> list[CourseMaterial]:
+        statement = select(course_materials)
         if course_id is not None:
-            statement = statement.where(rubrics.c.course_id == course_id)
-        if exam_id is not None:
-            statement = statement.where(rubrics.c.exam_id == exam_id)
-        if not include_archived:
-            statement = statement.where(rubrics.c.archived.is_(False))
-        statement = statement.order_by(rubrics.c.uploaded_at.desc())
+            statement = statement.where(course_materials.c.course_id == str(course_id))
+        statement = statement.order_by(course_materials.c.id)
         with self.engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
         return [self._to_model(row) for row in rows]
 
-    def delete(self, rubric_id: str) -> None:
+    def delete(self, material_id: UUID | str) -> None:
         with self.engine.begin() as connection:
             result = connection.execute(
-                delete(rubrics).where(rubrics.c.id == rubric_id)
+                delete(course_materials).where(
+                    course_materials.c.id == str(material_id)
+                )
             )
         if result.rowcount == 0:
-            raise RubricRecordNotFoundError(rubric_id)
+            raise CourseMaterialRecordNotFoundError(str(material_id))
 
-    def archive(self, rubric_id: str) -> None:
+    def mark_processing(
+        self,
+        material_id: UUID | str,
+    ) -> bool:
         statement = (
-            update(rubrics).where(rubrics.c.id == rubric_id).values(archived=True)
+            update(course_materials)
+            .where(
+                course_materials.c.id == str(material_id),
+                course_materials.c.status == "awaiting_upload",
+            )
+            .values(status="processing")
         )
         with self.engine.begin() as connection:
             result = connection.execute(statement)
-        if result.rowcount == 0:
-            raise RubricRecordNotFoundError(rubric_id)
+        return result.rowcount == 1
 
-    def mark_processing_completed(self, rubric_id: str, chunk_ids: list[str]) -> None:
+    def mark_processing_completed(self, material_id: UUID | str) -> None:
         statement = (
-            update(rubrics)
-            .where(rubrics.c.id == rubric_id)
-            .values(
-                processed=True,
-                processing_status="completed",
-                processing_error=None,
-                chunk_count=len(chunk_ids),
-                chunk_ids=chunk_ids,
-            )
+            update(course_materials)
+            .where(course_materials.c.id == str(material_id))
+            .values(status="completed")
         )
+        self._execute_required(statement, material_id)
+
+    def mark_processing_failed(self, material_id: UUID | str) -> None:
+        statement = (
+            update(course_materials)
+            .where(course_materials.c.id == str(material_id))
+            .values(status="failed")
+        )
+        self._execute_required(statement, material_id)
+
+    def _execute_required(self, statement, material_id: UUID | str) -> None:
         with self.engine.begin() as connection:
             result = connection.execute(statement)
         if result.rowcount == 0:
-            raise RubricRecordNotFoundError(rubric_id)
-
-    def mark_processing_failed(self, rubric_id: str, error: str) -> None:
-        statement = (
-            update(rubrics)
-            .where(rubrics.c.id == rubric_id)
-            .values(
-                processed=False,
-                processing_status="failed",
-                processing_error=error[:2000],
-                chunk_count=0,
-                chunk_ids=[],
-            )
-        )
-        with self.engine.begin() as connection:
-            result = connection.execute(statement)
-        if result.rowcount == 0:
-            raise RubricRecordNotFoundError(rubric_id)
+            raise CourseMaterialRecordNotFoundError(str(material_id))
 
     @staticmethod
-    def _to_model(row: RowMapping) -> StoredRubric:
-        values = dict(row)
-        values["metadata"] = values.pop("custom_metadata")
-        return StoredRubric.model_validate(values)
+    def _to_model(row: RowMapping) -> CourseMaterial:
+        return CourseMaterial.model_validate(dict(row))

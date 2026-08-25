@@ -1,130 +1,126 @@
-from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 
 from app.db import (
-    PostgresRubricRepository,
-    RubricRecordConflictError,
-    RubricRecordNotFoundError,
+    CourseMaterialRecordConflictError,
+    CourseMaterialRecordNotFoundError,
+    PostgresCourseMaterialRepository,
 )
-from app.model import StoredRubric
+from app.model import CourseMaterial
+
+COURSE_ID = UUID("d87cecc2-e224-4e91-aeef-8c4773452674")
 
 
-def make_repository() -> PostgresRubricRepository:
-    return PostgresRubricRepository(engine=create_engine("sqlite+pysqlite:///:memory:"))
+def make_repository() -> PostgresCourseMaterialRepository:
+    return PostgresCourseMaterialRepository(
+        engine=create_engine("sqlite+pysqlite:///:memory:")
+    )
 
 
-def make_stored_rubric(
-    rubric_id: str = "rubric-1",
-    *,
-    uploaded_at: datetime | None = None,
-) -> StoredRubric:
-    return StoredRubric(
-        id=rubric_id,
-        document_id=f"document-{rubric_id}",
-        title="History rubric",
-        version="1",
-        course_id="HIST-101",
-        exam_id=f"exam-{rubric_id}",
-        filename="rubric.md",
-        content_type="text/markdown",
-        size_bytes=42,
-        sha256="0" * 64,
-        chunk_count=2,
-        processed=True,
-        processing_status="completed",
-        uploaded_at=uploaded_at or datetime.now(UTC),
-        metadata={"term": "fall"},
-        s3_bucket="rubric-documents",
-        s3_object_key=f"rubrics/{rubric_id}/document.md",
-        chunk_ids=["chunk-1", "chunk-2"],
+def make_material(material_id: UUID | None = None) -> CourseMaterial:
+    material_id = material_id or uuid4()
+    return CourseMaterial(
+        id=material_id,
+        course_id=COURSE_ID,
+        filename="lecture.md",
+        status="awaiting_upload",
+        s3_bucket="course-materials",
+        s3_object_key=f"{COURSE_ID}/{material_id}.md",
     )
 
 
 def test_postgres_repository_round_trip_and_delete() -> None:
     repository = make_repository()
     repository.initialize()
-    stored = make_stored_rubric()
+    material = make_material()
 
-    repository.save(stored)
+    repository.save(material)
 
     assert repository.health()
-    assert repository.exists(stored.id)
-    retrieved = repository.get(stored.id)
-    assert retrieved.model_dump(exclude={"uploaded_at"}) == stored.model_dump(
-        exclude={"uploaded_at"}
-    )
+    assert repository.get(material.id) == material
 
-    repository.delete(stored.id)
+    repository.delete(material.id)
 
-    assert not repository.exists(stored.id)
-    with pytest.raises(RubricRecordNotFoundError):
-        repository.get(stored.id)
+    with pytest.raises(CourseMaterialRecordNotFoundError):
+        repository.get(material.id)
 
 
 def test_postgres_repository_rejects_duplicate_ids() -> None:
     repository = make_repository()
     repository.initialize()
-    repository.save(make_stored_rubric())
+    material = make_material()
+    repository.save(material)
 
-    with pytest.raises(RubricRecordConflictError):
-        repository.save(make_stored_rubric())
+    with pytest.raises(CourseMaterialRecordConflictError):
+        repository.save(material)
 
 
-def test_postgres_repository_lists_newest_first() -> None:
+def test_postgres_repository_filters_by_course() -> None:
     repository = make_repository()
     repository.initialize()
-    now = datetime.now(UTC)
-    repository.save(make_stored_rubric("older", uploaded_at=now - timedelta(days=1)))
-    repository.save(make_stored_rubric("newer", uploaded_at=now))
-
-    records = repository.list()
-
-    assert [record.id for record in records] == ["newer", "older"]
-
-
-def test_postgres_repository_updates_processing_state() -> None:
-    repository = make_repository()
-    repository.initialize()
-    stored = make_stored_rubric()
-    stored.processed = False
-    stored.processing_status = "processing"
-    stored.chunk_count = 0
-    stored.chunk_ids = []
-    repository.save(stored)
-
-    repository.mark_processing_completed(stored.id, ["chunk-a", "chunk-b"])
-    completed = repository.get(stored.id)
-
-    assert completed.processed is True
-    assert completed.processing_status == "completed"
-    assert completed.chunk_count == 2
-    assert completed.chunk_ids == ["chunk-a", "chunk-b"]
-
-    repository.mark_processing_failed(stored.id, "embedding request failed")
-    failed = repository.get(stored.id)
-
-    assert failed.processed is False
-    assert failed.processing_status == "failed"
-    assert failed.processing_error == "embedding request failed"
-    assert failed.chunk_count == 0
-    assert failed.chunk_ids == []
-
-
-def test_repository_filters_by_course_and_exam_and_archives() -> None:
-    repository = make_repository()
-    repository.initialize()
-    first = make_stored_rubric("first")
-    second = make_stored_rubric("second")
-    second.course_id = "MATH-101"
+    first = make_material()
+    second = make_material()
+    second.course_id = uuid4()
     repository.save(first)
     repository.save(second)
 
-    assert [item.id for item in repository.list(course_id="HIST-101")] == ["first"]
-    assert [item.id for item in repository.list(exam_id="exam-second")] == ["second"]
+    records = repository.list(course_id=COURSE_ID)
 
-    repository.archive("first")
+    assert [record.id for record in records] == [first.id]
 
-    assert repository.list(course_id="HIST-101") == []
-    assert repository.list(course_id="HIST-101", include_archived=True)[0].archived
+
+def test_repository_updates_processing_state() -> None:
+    repository = make_repository()
+    repository.initialize()
+    material = make_material()
+    repository.save(material)
+
+    assert repository.mark_processing(material.id)
+    assert not repository.mark_processing(material.id)
+    assert repository.get(material.id).status == "processing"
+
+    repository.mark_processing_completed(material.id)
+    assert repository.get(material.id).status == "completed"
+
+    repository.mark_processing_failed(material.id)
+    assert repository.get(material.id).status == "failed"
+
+
+def test_initialize_drops_no_longer_used_course_material_columns() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE course_materials (
+                    id VARCHAR(36) PRIMARY KEY,
+                    course_id VARCHAR(36) NOT NULL,
+                    filename VARCHAR(512) NOT NULL,
+                    content_type VARCHAR(255) NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    processing_error TEXT,
+                    chunk_count INTEGER NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    uploaded_at DATETIME,
+                    s3_bucket VARCHAR(255) NOT NULL,
+                    s3_object_key TEXT NOT NULL UNIQUE,
+                    chunk_ids JSON NOT NULL
+                )
+                """
+            )
+        )
+
+    PostgresCourseMaterialRepository(engine=engine).initialize()
+
+    assert {
+        column["name"] for column in inspect(engine).get_columns("course_materials")
+    } == {
+        "id",
+        "course_id",
+        "filename",
+        "status",
+        "s3_bucket",
+        "s3_object_key",
+    }

@@ -1,8 +1,8 @@
 """Database-backed domain models."""
 
-from app.model.rubric import Rubric, StoredRubric
+from app.model.course_material import (
+    CourseMaterial,
+    CourseMaterialStatus,
+)
 
-__all__ = [
-    "Rubric",
-    "StoredRubric",
-]
+__all__ = ["CourseMaterial", "CourseMaterialStatus"]

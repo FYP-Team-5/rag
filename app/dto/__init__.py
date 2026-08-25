@@ -1,11 +1,23 @@
-from app.dto.health import HealthResponse
-from app.dto.rubric import (
-    ArchiveResponse,
-    RubricChunk,
-    RubricChunksResponse,
-    RubricList,
-    RubricProcessingStatus,
+from app.dto.course_material import (
+    CourseMaterialList,
+    CourseMaterialProcessingStatus,
+    PresignedUrlRequest,
+    PresignedUrlResponse,
+    UploadStatusRequest,
+    UploadStatusResponse,
 )
+from app.dto.health import HealthResponse
 from app.dto.search import SearchRequest, SearchResponse, SearchResult
 
-__all__ = ["ArchiveResponse", "HealthResponse", "RubricChunk", "RubricChunksResponse", "RubricList", "RubricProcessingStatus", "SearchRequest", "SearchResponse", "SearchResult"]
+__all__ = [
+    "CourseMaterialList",
+    "CourseMaterialProcessingStatus",
+    "HealthResponse",
+    "PresignedUrlRequest",
+    "PresignedUrlResponse",
+    "SearchRequest",
+    "SearchResponse",
+    "SearchResult",
+    "UploadStatusRequest",
+    "UploadStatusResponse",
+]

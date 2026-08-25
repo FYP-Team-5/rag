@@ -25,7 +25,7 @@ def test_search_response_serializes_results() -> None:
             SearchResult(
                 content="Use accurate evidence.",
                 score=0.91,
-                metadata={"rubric_id": "rubric-1"},
+                metadata={"course_material_id": "material-1"},
             )
         ],
     )
@@ -36,7 +36,7 @@ def test_search_response_serializes_results() -> None:
             {
                 "content": "Use accurate evidence.",
                 "score": 0.91,
-                "metadata": {"rubric_id": "rubric-1"},
+                "metadata": {"course_material_id": "material-1"},
             }
         ],
     }
