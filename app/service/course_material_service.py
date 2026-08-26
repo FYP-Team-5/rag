@@ -26,7 +26,7 @@ from app.dto import (
     UploadStatusResponse,
 )
 from app.model import CourseMaterial
-from app.service.document_processor import SUPPORTED_EXTENSIONS, DocumentProcessor
+from app.service.document_processor import DocumentProcessor
 from app.service.embeddings import RemoteEmbeddings
 
 logger = logging.getLogger(__name__)
@@ -139,10 +139,6 @@ class CourseMaterialService:
     ) -> PresignedUrlResponse:
         filename = self._safe_filename(request.filename)
         extension = Path(filename).suffix.lower()
-        if extension not in SUPPORTED_EXTENSIONS:
-            raise InvalidCourseMaterialError(
-                "A .pdf, .docx, .txt, or .md course-material file is required."
-            )
         material_id = uuid.uuid4()
         object_key = f"{request.course_id}/{material_id}{extension}"
         stored = CourseMaterial(
@@ -224,20 +220,73 @@ class CourseMaterialService:
                     course_material_id=material_id, status="processing"
                 )
 
-            task = asyncio.create_task(
-                self._process_document(stored, processing_path),
-                name=f"process-course-material-{material_id}",
-            )
-            key = str(material_id)
-            self._processing_tasks[key] = task
-            task.add_done_callback(
-                lambda completed, item_id=key: self._forget_processing_task(
-                    item_id, completed
-                )
-            )
+            self._schedule_processing(stored, processing_path)
             return UploadStatusResponse(
                 course_material_id=material_id, status="processing"
             )
+
+    async def retry_processing(self, material_id: UUID) -> UploadStatusResponse:
+        async with self._write_lock:
+            stored = await self.get_stored(material_id)
+            if stored.status != "failed":
+                raise CourseMaterialConflictError(
+                    "Only course material with failed processing can be retried."
+                )
+
+            transitioned = await asyncio.to_thread(
+                self.metadata_store.retry_processing,
+                material_id,
+            )
+            if not transitioned:
+                return UploadStatusResponse(
+                    course_material_id=material_id, status="processing"
+                )
+
+            processing_path = (
+                self.settings.processing_dir
+                / f"{material_id}{Path(stored.filename).suffix.lower()}"
+            )
+            try:
+                await asyncio.to_thread(
+                    self._require_vectors().delete_by_document,
+                    str(material_id),
+                )
+                await self._download_uploaded_file(stored, processing_path)
+            except Exception:
+                processing_path.unlink(missing_ok=True)
+                try:
+                    await asyncio.to_thread(
+                        self.metadata_store.mark_processing_failed,
+                        material_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Unable to restore failed status while preparing retry for %s",
+                        material_id,
+                    )
+                raise
+
+            self._schedule_processing(stored, processing_path)
+            return UploadStatusResponse(
+                course_material_id=material_id, status="processing"
+            )
+
+    def _schedule_processing(
+        self,
+        stored: CourseMaterial,
+        processing_path: Path,
+    ) -> None:
+        task = asyncio.create_task(
+            self._process_document(stored, processing_path),
+            name=f"process-course-material-{stored.id}",
+        )
+        key = str(stored.id)
+        self._processing_tasks[key] = task
+        task.add_done_callback(
+            lambda completed, item_id=key: self._forget_processing_task(
+                item_id, completed
+            )
+        )
 
     async def _download_uploaded_file(
         self,
@@ -397,7 +446,7 @@ class CourseMaterialService:
             self._require_vectors().search,
             request.query,
             k=request.k,
-            course_id=str(request.course_id) if request.course_id else None,
+            course_id=request.course_id,
             score_threshold=request.score_threshold,
         )
         return SearchResponse(

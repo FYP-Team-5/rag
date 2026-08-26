@@ -87,6 +87,10 @@ def test_repository_updates_processing_state() -> None:
     repository.mark_processing_failed(material.id)
     assert repository.get(material.id).status == "failed"
 
+    assert repository.retry_processing(material.id)
+    assert not repository.retry_processing(material.id)
+    assert repository.get(material.id).status == "processing"
+
 
 def test_initialize_drops_no_longer_used_course_material_columns() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")

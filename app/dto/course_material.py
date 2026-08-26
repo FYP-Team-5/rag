@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import UUID4, BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.model import CourseMaterial, CourseMaterialStatus
 
 
 class PresignedUrlRequest(BaseModel):
-    course_id: UUID4
+    course_id: UUID
     filename: str = Field(min_length=1, max_length=512)
 
     @field_validator("filename")

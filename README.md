@@ -4,7 +4,8 @@ A FastAPI service that accepts course-material metadata, lets the frontend uploa
 files directly to S3-compatible storage, and then chunks and embeds uploaded files
 for semantic search in Qdrant.
 
-Supported document types are PDF, DOCX, TXT, and Markdown.
+The presign endpoint only accepts metadata and never receives file content. PDF,
+DOCX, TXT, and Markdown are the formats supported later by background processing.
 
 ## Current flow
 
@@ -54,7 +55,7 @@ PostgreSQL stores one `course_materials` record with only these fields:
 | Field | Description |
 |---|---|
 | `id` | Generated UUIDv4 course-material ID |
-| `course_id` | Owning course UUIDv4 |
+| `course_id` | Owning course UUID |
 | `filename` | Sanitized original filename |
 | `status` | `awaiting_upload`, `processing`, `completed`, or `failed` |
 | `s3_bucket` | Configured course-material bucket |
@@ -92,7 +93,8 @@ Example response:
 ```
 
 The backend creates the PostgreSQL record before returning the URL. If presigning
-fails, that record is cleaned up.
+fails, that record is cleaned up. The filename extension is not validated at this
+stage because the frontend has not uploaded the object yet.
 
 ### 2. Upload directly to S3
 
@@ -157,6 +159,17 @@ Processing failures retain the record with `status: "failed"`. Partial vectors a
 removed from Qdrant. Processing interrupted by an application restart is also
 marked failed.
 
+To retry a failed processing job without uploading the file again:
+
+```http
+POST /api/v1/course-material/10a7de1e-55f5-43b7-8208-c152ef77a5b5/retry-processing
+```
+
+The backend first deletes every Qdrant chunk belonging to that course material,
+downloads the existing object from S3 again, and starts a new background processing
+job. Only records with `status: "failed"` can be retried; other states return `409`.
+If retry preparation fails, the record is restored to `status: "failed"`.
+
 ## Other endpoints
 
 | Method | Path | Purpose |
@@ -164,6 +177,7 @@ marked failed.
 | `GET` | `/health` | Check PostgreSQL, S3, and Qdrant readiness |
 | `GET` | `/api/v1/course-material` | List materials; supports `offset`, `limit`, and `course_id` |
 | `GET` | `/api/v1/course-material/{id}` | Read one course-material record |
+| `POST` | `/api/v1/course-material/{id}/retry-processing` | Retry failed chunking and embedding |
 | `POST` | `/api/v1/search` | Search embedded chunks, optionally filtered by course |
 
 Search example:

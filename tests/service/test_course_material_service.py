@@ -55,6 +55,20 @@ class FailingVectors(FakeVectors):
         raise EmbeddingsServiceError("Embeddings service unavailable.")
 
 
+class FailOnceVectors(FakeVectors):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed_once = False
+
+    def add_documents(self, documents: list[Document], ids: list[str]) -> None:
+        if not self.failed_once:
+            self.failed_once = True
+            if documents:
+                self.documents[ids[0]] = documents[0]
+            raise EmbeddingsServiceError("Embeddings service unavailable.")
+        super().add_documents(documents, ids)
+
+
 class BlockingVectors(FakeVectors):
     def __init__(self) -> None:
         super().__init__()
@@ -166,6 +180,21 @@ def test_presign_persists_filename_course_and_object_key(tmp_path: Path) -> None
     assert stored.status == "awaiting_upload"
 
 
+def test_presign_does_not_validate_or_receive_file_content(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+
+    created = asyncio.run(
+        service.create_presigned_url(
+            PresignedUrlRequest(course_id=COURSE_ID, filename="unvalidated.csv")
+        )
+    )
+
+    assert created.object_key.endswith(".csv")
+    assert service.metadata_store.get(created.course_material_id).status == (
+        "awaiting_upload"
+    )
+
+
 def test_uploaded_status_processes_and_searches_course_material(
     tmp_path: Path,
 ) -> None:
@@ -201,7 +230,7 @@ def test_uploaded_status_processes_and_searches_course_material(
         "accuracy",
         {
             "k": 2,
-            "course_id": str(COURSE_ID),
+            "course_id": COURSE_ID,
             "score_threshold": None,
         },
     )
@@ -254,6 +283,48 @@ def test_processing_failure_is_recorded_and_vectors_are_cleaned(
     assert list(service.settings.processing_dir.iterdir()) == []
     assert vectors.documents == {}
     assert vectors.deleted_document_ids == [str(created.course_material_id)]
+
+
+def test_failed_processing_can_be_retried_after_existing_vectors_are_deleted(
+    tmp_path: Path,
+) -> None:
+    vectors = FailOnceVectors()
+    service = make_service(tmp_path, vectors)
+
+    async def scenario():
+        created, _accepted, failed, _material = await create_upload_and_wait(service)
+        vectors.documents["stale-chunk"] = Document(
+            page_content="stale",
+            metadata={"document_id": str(created.course_material_id)},
+        )
+
+        accepted = await service.retry_processing(created.course_material_id)
+        completed = await service.wait_for_processing(created.course_material_id)
+        return created, failed, accepted, completed
+
+    created, failed, accepted, completed = asyncio.run(scenario())
+
+    assert failed.status == "failed"
+    assert accepted.status == "processing"
+    assert completed.status == "completed"
+    assert "stale-chunk" not in vectors.documents
+    assert vectors.deleted_document_ids == [
+        str(created.course_material_id),
+        str(created.course_material_id),
+    ]
+    assert vectors.documents
+
+
+def test_processing_retry_requires_failed_status(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    created = asyncio.run(
+        service.create_presigned_url(
+            PresignedUrlRequest(course_id=COURSE_ID, filename="lecture.md")
+        )
+    )
+
+    with pytest.raises(ValueError, match="failed processing"):
+        asyncio.run(service.retry_processing(created.course_material_id))
 
 
 def test_upload_callback_returns_while_embeddings_run_in_background(

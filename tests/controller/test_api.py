@@ -61,6 +61,10 @@ class FakeService:
         self.materials[material_id].status = "processing"
         return UploadStatusResponse(course_material_id=material_id, status="processing")
 
+    async def retry_processing(self, material_id: UUID) -> UploadStatusResponse:
+        self.materials[material_id].status = "processing"
+        return UploadStatusResponse(course_material_id=material_id, status="processing")
+
     async def list(self, *, offset: int, limit: int, **kwargs):
         items = list(self.materials.values())
         return len(items), items[offset : offset + limit]
@@ -147,6 +151,26 @@ def test_failed_upload_deletes_material(tmp_path: Path) -> None:
     assert listing.json()["total"] == 0
 
 
+def test_retry_processing(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        client.post(
+            "/api/v1/course-material/create_presigned",
+            json={"course_id": str(COURSE_ID), "filename": "lecture.pdf"},
+        )
+        client.app.state.course_material_service.materials[MATERIAL_ID].status = (
+            "failed"
+        )
+        response = client.post(
+            f"/api/v1/course-material/{MATERIAL_ID}/retry-processing"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "course_material_id": str(MATERIAL_ID),
+        "status": "processing",
+    }
+
+
 def test_old_rubric_upload_route_is_removed(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post("/api/v1/rubrics")
@@ -181,6 +205,28 @@ def test_swagger_routes_are_split_by_controller(tmp_path: Path) -> None:
         "tags"
     ] == ["course-material"]
     assert schema["paths"]["/api/v1/search"]["post"]["tags"] == ["search"]
+    assert (
+        schema["components"]["schemas"]["CourseMaterial"]["properties"]["course_id"][
+            "format"
+        ]
+        == "uuid"
+    )
+    assert (
+        schema["components"]["schemas"]["PresignedUrlRequest"]["properties"][
+            "course_id"
+        ]["format"]
+        == "uuid"
+    )
+    search_course_id = schema["components"]["schemas"]["SearchRequest"]["properties"][
+        "course_id"
+    ]
+    assert search_course_id["anyOf"][0]["format"] == "uuid"
+    list_course_id = next(
+        parameter
+        for parameter in schema["paths"]["/api/v1/course-material"]["get"]["parameters"]
+        if parameter["name"] == "course_id"
+    )
+    assert list_course_id["schema"]["anyOf"][0]["format"] == "uuid"
 
 
 def test_health_reports_required_database_failure(tmp_path: Path) -> None:

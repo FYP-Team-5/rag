@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from typing import Any
+from uuid import UUID
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -160,7 +161,7 @@ class QdrantRepository:
         query: str,
         *,
         k: int,
-        course_id: str | None = None,
+        course_id: UUID | None = None,
         score_threshold: float | None = None,
     ) -> list[tuple[Document, float]]:
         conditions: list[models.FieldCondition] = []
@@ -168,7 +169,7 @@ class QdrantRepository:
             conditions.append(
                 models.FieldCondition(
                     key="metadata.course_id",
-                    match=models.MatchValue(value=course_id),
+                    match=models.MatchValue(value=str(course_id)),
                 )
             )
         query_filter = models.Filter(must=conditions) if conditions else None

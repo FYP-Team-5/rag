@@ -76,6 +76,32 @@ async def report_upload_status(
         ) from exc
 
 
+@course_material_router.post(
+    "/{material_id}/retry-processing",
+    response_model=UploadStatusResponse,
+)
+async def retry_processing(
+    material_id: UUID,
+    service: Annotated[CourseMaterialService, Depends(get_course_material_service)],
+) -> UploadStatusResponse:
+    try:
+        return await service.retry_processing(material_id)
+    except CourseMaterialNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail="Course material not found."
+        ) from exc
+    except CourseMaterialConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CourseMaterialTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except InvalidCourseMaterialError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except S3StorageError as exc:
+        raise HTTPException(
+            status_code=502, detail="Object storage request failed."
+        ) from exc
+
+
 @course_material_router.get("", response_model=CourseMaterialList)
 async def list_course_materials(
     service: Annotated[CourseMaterialService, Depends(get_course_material_service)],

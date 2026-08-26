@@ -8,6 +8,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    Uuid,
     create_engine,
     delete,
     func,
@@ -28,7 +29,7 @@ course_materials = Table(
     "course_materials",
     metadata,
     Column("id", String(36), primary_key=True),
-    Column("course_id", String(36), nullable=False, index=True),
+    Column("course_id", Uuid(as_uuid=True), nullable=False, index=True),
     Column("filename", String(512), nullable=False),
     Column("status", String(32), nullable=False, index=True),
     Column("s3_bucket", String(255), nullable=False),
@@ -61,7 +62,26 @@ class PostgresCourseMaterialRepository:
         # The legacy rubrics table is intentionally left untouched. Removing it would
         # be a destructive migration and it is no longer read by this service.
         metadata.create_all(self.engine)
+        self._migrate_course_id_type()
         self._drop_unused_columns()
+
+    def _migrate_course_id_type(self) -> None:
+        if self.engine.dialect.name != "postgresql":
+            return
+        course_id = next(
+            column
+            for column in inspect(self.engine).get_columns("course_materials")
+            if column["name"] == "course_id"
+        )
+        if str(course_id["type"]).upper() == "UUID":
+            return
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE course_materials "
+                    "ALTER COLUMN course_id TYPE UUID USING course_id::uuid"
+                )
+            )
 
     def _drop_unused_columns(self) -> None:
         existing = {
@@ -100,7 +120,6 @@ class PostgresCourseMaterialRepository:
     def save(self, stored: CourseMaterial) -> None:
         values = stored.model_dump()
         values["id"] = str(values["id"])
-        values["course_id"] = str(values["course_id"])
         try:
             with self.engine.begin() as connection:
                 connection.execute(insert(course_materials).values(**values))
@@ -117,10 +136,10 @@ class PostgresCourseMaterialRepository:
             raise CourseMaterialRecordNotFoundError(str(material_id))
         return self._to_model(row)
 
-    def list(self, *, course_id: UUID | str | None = None) -> list[CourseMaterial]:
+    def list(self, *, course_id: UUID | None = None) -> list[CourseMaterial]:
         statement = select(course_materials)
         if course_id is not None:
-            statement = statement.where(course_materials.c.course_id == str(course_id))
+            statement = statement.where(course_materials.c.course_id == course_id)
         statement = statement.order_by(course_materials.c.id)
         with self.engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
@@ -145,6 +164,19 @@ class PostgresCourseMaterialRepository:
             .where(
                 course_materials.c.id == str(material_id),
                 course_materials.c.status == "awaiting_upload",
+            )
+            .values(status="processing")
+        )
+        with self.engine.begin() as connection:
+            result = connection.execute(statement)
+        return result.rowcount == 1
+
+    def retry_processing(self, material_id: UUID | str) -> bool:
+        statement = (
+            update(course_materials)
+            .where(
+                course_materials.c.id == str(material_id),
+                course_materials.c.status == "failed",
             )
             .values(status="processing")
         )

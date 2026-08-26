@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from langchain_core.documents import Document
@@ -7,6 +8,8 @@ from qdrant_client import models
 
 import app.db.qdrant_repository as qdrant_module
 from app.db import QdrantRepository
+
+COURSE_ID = UUID("d87cecc2-e224-4e91-aeef-8c4773452674")
 
 
 class NoNetworkEmbeddings(Embeddings):
@@ -159,7 +162,7 @@ def test_search_builds_qdrant_filters() -> None:
     results = repository.search(
         "accuracy",
         k=3,
-        course_id="HIST-101",
+        course_id=COURSE_ID,
         score_threshold=0.5,
     )
 
@@ -173,6 +176,7 @@ def test_search_builds_qdrant_filters() -> None:
     assert [condition["key"] for condition in dumped_filter["must"]] == [
         "metadata.course_id",
     ]
+    assert dumped_filter["must"][0]["match"]["value"] == str(COURSE_ID)
 
 
 def test_add_documents_calls_model_then_upserts_vectors() -> None:
