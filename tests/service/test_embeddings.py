@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -33,6 +34,32 @@ def test_remote_embeddings_uses_openai_contract_and_response_indexes() -> None:
     )
 
     assert embeddings.embed_documents(["first", "second"]) == [[1.0, 2.0], [3.0, 4.0]]
+
+
+def test_remote_embeddings_logs_request_metadata_without_input_text(caplog) -> None:
+    embeddings = RemoteEmbeddings(
+        url="http://embeddings:8000/v1/embeddings?private=value",
+        model="qwen3-embedding",
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(
+                    200,
+                    json={"data": [{"index": 0, "embedding": [1, 2]}]},
+                )
+            )
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.service.embeddings"):
+        embeddings.embed_query("private course material")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Embeddings request started" in message for message in messages)
+    assert any("Embeddings request completed" in message for message in messages)
+    assert any("model=qwen3-embedding" in message for message in messages)
+    assert any("input_count=1" in message for message in messages)
+    assert all("private course material" not in message for message in messages)
+    assert all("private=value" not in message for message in messages)
 
 
 def test_remote_embeddings_rejects_invalid_vector_count() -> None:
@@ -71,7 +98,7 @@ def test_remote_embeddings_rejects_wrong_configured_dimension() -> None:
         embeddings.embed_query("query")
 
 
-def test_remote_embeddings_wraps_connection_errors() -> None:
+def test_remote_embeddings_wraps_and_logs_connection_errors(caplog) -> None:
     def unavailable(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("service unavailable", request=request)
 
@@ -81,8 +108,14 @@ def test_remote_embeddings_wraps_connection_errors() -> None:
         client=httpx.Client(transport=httpx.MockTransport(unavailable)),
     )
 
-    with pytest.raises(EmbeddingsServiceError, match="service unavailable"):
-        embeddings.embed_query("query")
+    with caplog.at_level(logging.ERROR, logger="app.service.embeddings"):
+        with pytest.raises(EmbeddingsServiceError, match="service unavailable"):
+            embeddings.embed_query("query")
+
+    assert any(
+        "Embeddings request failed" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_remote_embeddings_batches_document_requests() -> None:

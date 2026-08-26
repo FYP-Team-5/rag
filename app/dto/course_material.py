@@ -11,6 +11,7 @@ from app.model import CourseMaterial, CourseMaterialStatus
 class PresignedUrlRequest(BaseModel):
     course_id: UUID
     filename: str = Field(min_length=1, max_length=512)
+    file_extension: str = Field(min_length=1, max_length=16, examples=[".md"])
 
     @field_validator("filename")
     @classmethod
@@ -18,6 +19,14 @@ class PresignedUrlRequest(BaseModel):
         if not value.strip():
             raise ValueError("filename must not be blank")
         return value
+
+    @field_validator("file_extension")
+    @classmethod
+    def normalize_file_extension(cls, value: str) -> str:
+        extension = value.strip().lower().removeprefix(".")
+        if not extension or not extension.isalnum():
+            raise ValueError("file_extension must contain only letters and numbers")
+        return f".{extension}"
 
 
 class PresignedUrlResponse(BaseModel):

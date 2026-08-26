@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -40,13 +41,13 @@ class FakeService:
             filename=request.filename,
             status="awaiting_upload",
             s3_bucket="course-materials",
-            s3_object_key=f"{request.course_id}/{MATERIAL_ID}.pdf",
+            s3_object_key=f"{request.course_id}/{MATERIAL_ID}{request.file_extension}",
         )
         self.materials[MATERIAL_ID] = material
         return PresignedUrlResponse(
             course_material_id=MATERIAL_ID,
             presigned_url="http://localhost:8333/course-materials?signed=true",
-            object_key=f"{request.course_id}/{MATERIAL_ID}.pdf",
+            object_key=f"{request.course_id}/{MATERIAL_ID}{request.file_extension}",
             expires_in=900,
         )
 
@@ -115,7 +116,8 @@ def test_create_presigned_and_report_uploaded(tmp_path: Path) -> None:
             "/api/v1/course-material/create_presigned",
             json={
                 "course_id": str(COURSE_ID),
-                "filename": "lecture.pdf",
+                "filename": "Lecture notes",
+                "file_extension": ".pdf",
             },
         )
         status = client.post(
@@ -139,7 +141,11 @@ def test_failed_upload_deletes_material(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         client.post(
             "/api/v1/course-material/create_presigned",
-            json={"course_id": str(COURSE_ID), "filename": "lecture.pdf"},
+            json={
+                "course_id": str(COURSE_ID),
+                "filename": "Lecture notes",
+                "file_extension": ".pdf",
+            },
         )
         response = client.post(
             f"/api/v1/course-material/{MATERIAL_ID}/upload-status",
@@ -155,7 +161,11 @@ def test_retry_processing(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         client.post(
             "/api/v1/course-material/create_presigned",
-            json={"course_id": str(COURSE_ID), "filename": "lecture.pdf"},
+            json={
+                "course_id": str(COURSE_ID),
+                "filename": "Lecture notes",
+                "file_extension": ".pdf",
+            },
         )
         client.app.state.course_material_service.materials[MATERIAL_ID].status = (
             "failed"
@@ -239,6 +249,29 @@ def test_health_reports_required_database_failure(tmp_path: Path) -> None:
     }
 
 
+def test_http_errors_and_validation_errors_are_logged(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        with make_client(tmp_path, service_type=UnhealthyService) as client:
+            unavailable = client.get("/health")
+            invalid = client.get("/api/v1/course-material/not-a-uuid")
+
+    assert unavailable.status_code == 503
+    assert invalid.status_code == 422
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "HTTP error method=GET path=/health status_code=503" in message
+        for message in messages
+    )
+    assert any(
+        "Request validation failed method=GET "
+        "path=/api/v1/course-material/not-a-uuid" in message
+        for message in messages
+    )
+
+
 def test_search_returns_bad_gateway_when_embeddings_are_unavailable(
     tmp_path: Path,
 ) -> None:
@@ -252,7 +285,11 @@ def test_presign_returns_bad_gateway_when_s3_is_unavailable(tmp_path: Path) -> N
     with make_client(tmp_path, service_type=ObjectStorageUnavailableService) as client:
         response = client.post(
             "/api/v1/course-material/create_presigned",
-            json={"course_id": str(uuid4()), "filename": "lecture.pdf"},
+            json={
+                "course_id": str(uuid4()),
+                "filename": "Lecture notes",
+                "file_extension": ".pdf",
+            },
         )
 
     assert response.status_code == 502

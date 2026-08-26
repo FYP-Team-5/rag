@@ -150,7 +150,8 @@ async def create_upload_and_wait(
     created = await service.create_presigned_url(
         PresignedUrlRequest(
             course_id=COURSE_ID,
-            filename="lecture.md",
+            filename="Lecture notes",
+            file_extension=".md",
         )
     )
     document_store = service.document_store
@@ -169,23 +170,32 @@ def test_presign_persists_filename_course_and_object_key(tmp_path: Path) -> None
 
     created = asyncio.run(
         service.create_presigned_url(
-            PresignedUrlRequest(course_id=COURSE_ID, filename="slides.pdf")
+            PresignedUrlRequest(
+                course_id=COURSE_ID,
+                filename="Week 1 slides",
+                file_extension="pdf",
+            )
         )
     )
     stored = service.metadata_store.get(created.course_material_id)
 
     assert stored.course_id == COURSE_ID
-    assert stored.filename == "slides.pdf"
+    assert stored.filename == "Week 1 slides"
     assert stored.s3_object_key == created.object_key
+    assert stored.s3_object_key.endswith(".pdf")
     assert stored.status == "awaiting_upload"
 
 
-def test_presign_does_not_validate_or_receive_file_content(tmp_path: Path) -> None:
+def test_presign_does_not_validate_frontend_provided_file_type(tmp_path: Path) -> None:
     service = make_service(tmp_path)
 
     created = asyncio.run(
         service.create_presigned_url(
-            PresignedUrlRequest(course_id=COURSE_ID, filename="unvalidated.csv")
+            PresignedUrlRequest(
+                course_id=COURSE_ID,
+                filename="Spreadsheet",
+                file_extension=".csv",
+            )
         )
     )
 
@@ -240,7 +250,11 @@ def test_failed_upload_status_deletes_postgres_entry(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     created = asyncio.run(
         service.create_presigned_url(
-            PresignedUrlRequest(course_id=COURSE_ID, filename="lecture.md")
+            PresignedUrlRequest(
+                course_id=COURSE_ID,
+                filename="Lecture notes",
+                file_extension=".md",
+            )
         )
     )
 
@@ -256,7 +270,11 @@ def test_uploaded_status_requires_object_to_exist(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     created = asyncio.run(
         service.create_presigned_url(
-            PresignedUrlRequest(course_id=COURSE_ID, filename="lecture.md")
+            PresignedUrlRequest(
+                course_id=COURSE_ID,
+                filename="Lecture notes",
+                file_extension=".md",
+            )
         )
     )
 
@@ -319,7 +337,11 @@ def test_processing_retry_requires_failed_status(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     created = asyncio.run(
         service.create_presigned_url(
-            PresignedUrlRequest(course_id=COURSE_ID, filename="lecture.md")
+            PresignedUrlRequest(
+                course_id=COURSE_ID,
+                filename="Lecture notes",
+                file_extension=".md",
+            )
         )
     )
 
@@ -335,7 +357,11 @@ def test_upload_callback_returns_while_embeddings_run_in_background(
 
     async def scenario():
         created = await service.create_presigned_url(
-            PresignedUrlRequest(course_id=COURSE_ID, filename="lecture.md")
+            PresignedUrlRequest(
+                course_id=COURSE_ID,
+                filename="Lecture notes",
+                file_extension=".md",
+            )
         )
         document_store = service.document_store
         assert isinstance(document_store, FakeDocumentStore)

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Sequence
 from typing import Any
 
 import httpx
 from langchain_core.embeddings import Embeddings
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingsServiceError(RuntimeError):
@@ -27,6 +31,7 @@ class RemoteEmbeddings(Embeddings):
         client: httpx.Client | None = None,
     ) -> None:
         self.url = url
+        self._log_url = str(httpx.URL(url).copy_with(query=None, fragment=None))
         self.model = model
         self.dimension = dimension
         self.batch_size = batch_size
@@ -60,20 +65,73 @@ class RemoteEmbeddings(Embeddings):
     def _embed(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
+
+        started_at = time.perf_counter()
+        status_code: int | None = None
+        logger.info(
+            "Embeddings request started model=%s endpoint=%s input_count=%d",
+            self.model,
+            self._log_url,
+            len(texts),
+        )
         try:
             response = self._client.post(
                 self.url,
                 json={"model": self.model, "input": list(texts)},
             )
+            status_code = response.status_code
             response.raise_for_status()
             body: Any = response.json()
         except (httpx.HTTPError, ValueError) as exc:
+            logger.exception(
+                "Embeddings request failed model=%s endpoint=%s input_count=%d "
+                "status_code=%s duration_ms=%.2f",
+                self.model,
+                self._log_url,
+                len(texts),
+                status_code,
+                (time.perf_counter() - started_at) * 1000,
+            )
             raise EmbeddingsServiceError(
                 f"Embeddings request to {self.url} failed: {exc}"
             ) from exc
 
+        try:
+            vectors = self._parse_response(body, len(texts))
+        except EmbeddingsServiceError:
+            logger.exception(
+                "Invalid embeddings response model=%s endpoint=%s input_count=%d "
+                "status_code=%s duration_ms=%.2f",
+                self.model,
+                self._log_url,
+                len(texts),
+                status_code,
+                (time.perf_counter() - started_at) * 1000,
+            )
+            raise
+
+        logger.info(
+            "Embeddings request completed model=%s endpoint=%s input_count=%d "
+            "status_code=%d vector_count=%d dimension=%d duration_ms=%.2f",
+            self.model,
+            self._log_url,
+            len(texts),
+            status_code,
+            len(vectors),
+            len(vectors[0]),
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return vectors
+
+    def _parse_response(
+        self,
+        body: Any,
+        expected_count: int,
+    ) -> list[list[float]]:
         if not isinstance(body, dict) or not isinstance(body.get("data"), list):
-            raise EmbeddingsServiceError("Embeddings response must contain a 'data' array.")
+            raise EmbeddingsServiceError(
+                "Embeddings response must contain a 'data' array."
+            )
 
         indexed: list[tuple[int, list[float]]] = []
         for position, item in enumerate(body["data"]):
@@ -93,8 +151,8 @@ class RemoteEmbeddings(Embeddings):
             indexed.append((index, vector))
 
         indexed.sort(key=lambda pair: pair[0])
-        if len(indexed) != len(texts) or [index for index, _ in indexed] != list(
-            range(len(texts))
+        if len(indexed) != expected_count or [index for index, _ in indexed] != list(
+            range(expected_count)
         ):
             raise EmbeddingsServiceError(
                 "The embeddings service returned the wrong number of vectors or indexes."

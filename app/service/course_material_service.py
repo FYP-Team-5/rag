@@ -128,19 +128,25 @@ class CourseMaterialService:
             asyncio.to_thread(self.metadata_store.health),
             asyncio.to_thread(self.document_store.health),
         )
-        return {
+        components = {
             "qdrant": qdrant_healthy,
             "postgres": postgres_healthy,
             "s3": s3_healthy,
         }
+        unavailable = [name for name, healthy in components.items() if not healthy]
+        if unavailable:
+            logger.error(
+                "Dependency health check failed unavailable=%s",
+                ",".join(unavailable),
+            )
+        return components
 
     async def create_presigned_url(
         self, request: PresignedUrlRequest
     ) -> PresignedUrlResponse:
         filename = self._safe_filename(request.filename)
-        extension = Path(filename).suffix.lower()
         material_id = uuid.uuid4()
-        object_key = f"{request.course_id}/{material_id}{extension}"
+        object_key = f"{request.course_id}/{material_id}{request.file_extension}"
         stored = CourseMaterial(
             id=material_id,
             course_id=request.course_id,
@@ -205,10 +211,7 @@ class CourseMaterialService:
                     "The course material has already failed processing."
                 )
 
-            processing_path = (
-                self.settings.processing_dir
-                / f"{material_id}{Path(stored.filename).suffix.lower()}"
-            )
+            processing_path = self._processing_path(stored)
             await self._download_uploaded_file(stored, processing_path)
             transitioned = await asyncio.to_thread(
                 self.metadata_store.mark_processing,
@@ -242,10 +245,7 @@ class CourseMaterialService:
                     course_material_id=material_id, status="processing"
                 )
 
-            processing_path = (
-                self.settings.processing_dir
-                / f"{material_id}{Path(stored.filename).suffix.lower()}"
-            )
+            processing_path = self._processing_path(stored)
             try:
                 await asyncio.to_thread(
                     self._require_vectors().delete_by_document,
@@ -370,7 +370,7 @@ class CourseMaterialService:
                     "Unable to record processing failure for course material %s",
                     stored.id,
                 )
-            logger.error(
+            logger.exception(
                 "Course-material processing failed for %s: %s",
                 stored.id,
                 self._processing_error_message(exc),
@@ -472,6 +472,10 @@ class CourseMaterialService:
         if basename in {"", ".", ".."}:
             raise InvalidCourseMaterialError("A valid filename is required.")
         return basename
+
+    def _processing_path(self, stored: CourseMaterial) -> Path:
+        extension = Path(stored.s3_object_key).suffix.lower()
+        return self.settings.processing_dir / f"{stored.id}{extension}"
 
     @staticmethod
     def _processing_error_message(exc: Exception) -> str:
